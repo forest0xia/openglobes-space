@@ -751,7 +751,7 @@ export default function App() {
 
     // Apply initial real scale (must be after focIdx is declared)
     applyAllScales();
-    let showClouds = true;
+    // (cloud layer always visible — no toggle)
 
     // Unified: compute camera distance so object fills ~70% of screen
     // fov=50°, 70% of fov = 35° half-angle = 17.5°. dist = r / tan(17.5°) ≈ r * 3.17
@@ -783,20 +783,7 @@ export default function App() {
         g.innerHTML += `<div><div class="info-stat-label">${k}</div><div class="info-stat-val">${v}</div></div>`;
       });
 
-      // Extra controls for Earth
-      const extras = iExtrasRef.current!;
-      extras.innerHTML = '';
-      if (p.id === 'earth') {
-        extras.innerHTML = `
-          <div class="info-line"></div>
-          <div class="info-stat-label" style="margin-bottom:8px">图层控制</div>
-          <label class="info-toggle"><input type="checkbox" ${showClouds ? 'checked' : ''} id="__cloud_toggle"><span>☁️ 云层</span></label>
-        `;
-        extras.querySelector('#__cloud_toggle')?.addEventListener('change', (ev) => {
-          showClouds = (ev.target as HTMLInputElement).checked;
-          if (earthCloudMesh) earthCloudMesh.visible = showClouds;
-        });
-      }
+      iExtrasRef.current!.innerHTML = '';
 
       infoRef.current!.classList.add('open');
     }
@@ -1125,12 +1112,16 @@ export default function App() {
         const sc = baseScale(eIdx);
         const baseSatSize = sc * earthSceneR * 0.005;
 
+        // Hide all satellites + trails when Earth is too small on screen
+        const earthScreenForSats = getScreenSize(meshes[eIdx], cam, earthSceneR * sc);
+        const hideAllSats = earthScreenForSats < innerHeight / 100;
+
         for (let i = 0; i < sd.sats.length; i++) {
           const sm = sd.meshes[i];
           if (!sm) continue;
           const sat = sd.sats[i];
           const groupOn = sd.groups[sat?.groupId] ?? false;
-          if (!groupOn) {
+          if (!groupOn || hideAllSats) {
             sm.visible = false;
             if (satTrailLines[i]) { satTrailLines[i].visible = false; satTrailLines[i].geometry.setDrawRange(0, 0); }
             if (satTrails[i]) { satTrails[i].fill(0); satTrailReady[i] = false; }
@@ -1314,7 +1305,7 @@ export default function App() {
   return (
     <>
       <div className="intro" ref={introRef}>
-        <div className="intro-line"><span className="intro-word intro-title w1">SPACE NOW</span></div>
+        <div className="intro-line"><span className="intro-word intro-title w1">OPENGLOBES</span></div>
         <div className="intro-line"><span className="intro-word w2">此 刻 太 空</span></div>
         <div className="intro-pulse" style={{ marginTop: 24 }}></div>
       </div>
@@ -1323,7 +1314,7 @@ export default function App() {
 
       <div className="chrome-top">
         <div className="brand">
-          <div className="brand-en">Space Now</div>
+          <div className="brand-en">OpenGlobes</div>
           <div className="brand-cn">此刻太空</div>
         </div>
         <div className="layers">
