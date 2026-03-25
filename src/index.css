@@ -255,6 +255,21 @@ canvas{display:block;position:fixed;inset:0;z-index:1}
 .sat-label{font-size:8px;color:rgba(212,217,227,.5)}
 .galaxy-label{font-size:11px;color:rgba(255,220,180,.8);font-weight:500;text-shadow:0 0 8px rgba(255,180,100,.4)}
 
+/* ═══════ TOAST POPUP ═══════ */
+.toast{
+  position:fixed;bottom:80px;left:50%;transform:translateX(-50%) translateY(20px);
+  z-index:300;max-width:420px;width:calc(100% - 40px);
+  background:var(--glass);border:1px solid var(--glass-edge);
+  border-radius:12px;backdrop-filter:blur(25px);
+  padding:16px 20px;opacity:0;pointer-events:none;
+  transition:all .35s cubic-bezier(.4,0,.2,1);
+  font-family:var(--font-cn);font-size:12px;line-height:1.7;color:var(--text);
+}
+.toast.show{opacity:1;pointer-events:auto;transform:translateX(-50%) translateY(0)}
+.toast-title{font-family:var(--font-mono);font-size:11px;color:var(--glow);letter-spacing:1px;margin-bottom:6px;font-weight:700}
+.toast-close{position:absolute;top:8px;right:12px;color:var(--text-dim);cursor:pointer;font-size:16px;padding:4px 8px;border:none;background:none}
+.toast-close:hover{color:var(--text)}
+
 /* ═══════ SETTINGS PANEL (desktop + mobile) ═══════ */
 .mobile-settings{
   position:fixed;right:0;top:0;bottom:0;width:280px;z-index:200;

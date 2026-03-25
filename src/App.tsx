@@ -90,6 +90,7 @@ export default function App() {
   const [satListOpen, setSatListOpen] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [mobileSettingsOpen, setMobileSettingsOpen] = useState(false);
+  const [toast, setToast] = useState<{ title: string; text: string } | null>(null);
   const [satellites, setSatellites] = useState<SatRecord[]>([]);
   const [satGroups, setSatGroups] = useState<Record<string, boolean>>({ beidou: true, stations: true, gps: false, starlink: false, visual: false });
 
@@ -164,6 +165,7 @@ export default function App() {
     }
     makeStars(4000, .8, .7, 800, 3000);
     makeStars(2000, 1.5, .35, 3000, 8000);
+    makeStars(1500, 2.5, .2, 8000, 30000); // distant stars — fill gap before MW appears
 
     // ═══════ MILKY WAY + DEEP SPACE ═══════
     // Scale calculation:
@@ -1089,10 +1091,7 @@ export default function App() {
         if (!paused) meshes[i].rotation.y += dt * .25;
 
         // Hide planet + its orbit if too small on screen
-        const pScreenSz = getScreenSize(meshes[i], cam, baseScale(i) * p.r);
-        const tooSmall = pScreenSz < innerHeight * MIN_SCREEN_FRAC;
-        meshes[i].visible = !tooSmall;
-        if (orbitLines[i - 1]) orbitLines[i - 1].visible = showOrbits && !tooSmall;
+        if (orbitLines[i - 1]) orbitLines[i - 1].visible = showOrbits;
       });
 
       // Cloud rotation (children inherit position, just rotate relative to parent)
@@ -1177,7 +1176,8 @@ export default function App() {
         const ep = meshes[eIdx].position;
         const sc = baseScale(eIdx);
         // Satellite visual size — proportional to Earth, very small
-        const baseSatSize = sc * earthSceneR * 0.002;
+        // Satellite visual size — very small relative to Earth
+        const baseSatSize = sc * earthSceneR * 0.0008;
 
         // Hide all satellites + trails when Earth is too small on screen
         const earthScreenForSats = getScreenSize(meshes[eIdx], cam, earthSceneR * sc);
@@ -1317,7 +1317,7 @@ export default function App() {
       // ═══ Multi-scale visibility ═══
       // Fade out local star field when zooming beyond solar system
       starLayers.forEach((pts, si) => {
-        const fade = cD < 3000 ? 1 : cD < 10000 ? 1 - (cD - 3000) / 7000 : 0;
+        const fade = cD < 5000 ? 1 : cD < 25000 ? 1 - (cD - 5000) / 20000 : 0;
         (pts.material as THREE.PointsMaterial).opacity = starBaseOpacities[si] * Math.max(0, fade);
         pts.visible = fade > 0;
       });
@@ -1328,10 +1328,13 @@ export default function App() {
       if (sunScreen < 3) {
         solarMarker.visible = true;
         solarMarker.scale.setScalar(Math.max(cD * 0.002, 0.5));
-        meshes[0].visible = false; // hide actual sun mesh
+        // Hide all planets and orbits at galaxy scale
+        meshes.forEach(m => m.visible = false);
+        orbitLines.forEach(ol => ol.visible = false);
       } else {
         solarMarker.visible = false;
-        meshes[0].visible = true;
+        meshes.forEach(m => m.visible = true);
+        orbitLines.forEach(ol => ol.visible = showOrbits);
       }
 
       // Milky Way — only when solar system is completely invisible
@@ -1488,7 +1491,7 @@ export default function App() {
                   <input type="checkbox" checked={satGroups[g.id] ?? false} onChange={() => (window as any).__toggleSatGroup(g.id)} />
                   <span style={{ color: g.color }}>{g.labelCn}</span>
                   <span className="sat-count">{satellites.filter(s => s.groupId === g.id).length}</span>
-                  <span onClick={(e) => { e.preventDefault(); e.stopPropagation(); alert(descriptions[g.id] || ''); }} style={{ cursor: 'help', color: 'var(--glow)', fontSize: 11, marginLeft: 'auto', padding: '2px 8px', background: 'rgba(94,234,212,0.08)', borderRadius: 10, userSelect: 'none' }}>?</span>
+                  <span onClick={(e) => { e.preventDefault(); e.stopPropagation(); setToast({ title: g.labelCn, text: descriptions[g.id] || '' }); }} style={{ cursor: 'help', color: 'var(--glow)', fontSize: 11, marginLeft: 'auto', padding: '2px 8px', background: 'rgba(94,234,212,0.08)', borderRadius: 10, userSelect: 'none' }}>?</span>
                 </label>
               </div>
             );
@@ -1547,10 +1550,18 @@ export default function App() {
           </div>
         ))}
         <div className="mobile-section-title">卫星</div>
-        <label className="mobile-toggle"><input type="checkbox" defaultChecked onChange={() => setSatListOpen(v => !v)} /><span>卫星面板</span></label>
         <label className="mobile-toggle"><input type="checkbox" defaultChecked onChange={() => (window as any).__toggleL('probe')} /><span>深空探测器</span></label>
       </div>
       <div className={`mobile-nav-backdrop ${mobileSettingsOpen ? 'open' : ''}`} onClick={() => setMobileSettingsOpen(false)} />
+
+      {/* Toast popup */}
+      <div className={`toast ${toast ? 'show' : ''}`}>
+        {toast && <>
+          <button className="toast-close" onClick={() => setToast(null)}>✕</button>
+          <div className="toast-title">{toast.title}</div>
+          <div>{toast.text}</div>
+        </>}
+      </div>
     </>
   );
 }
