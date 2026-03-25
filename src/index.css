@@ -67,6 +67,14 @@ canvas{display:block;position:fixed;inset:0;z-index:1}
 .layer-btn:hover{color:var(--glow);border-color:rgba(94,234,212,0.2)}
 .layer-btn.on{color:var(--glow);border-color:rgba(94,234,212,0.25);background:var(--glow-dim)}
 .layer-dot{width:5px;height:5px;border-radius:50%;background:currentColor;opacity:.6}
+.btn-group{display:flex;gap:2px;background:var(--glass);border:1px solid var(--glass-edge);border-radius:100px;padding:2px;backdrop-filter:blur(12px)}
+.layer-btn.compact{padding:5px 10px;border:none;border-radius:98px;font-size:12px;min-width:28px;text-align:center}
+.track-select{
+  background:var(--glass);color:var(--text-dim);font-family:var(--font-cn);font-size:10px;
+  padding:4px 8px;border-radius:100px;border:1px solid var(--glass-edge);
+  cursor:pointer;backdrop-filter:blur(12px);outline:none;
+}
+.track-select option{background:#080C1A}
 
 /* ═══════ LEFT NAV ═══════ */
 .nav{position:fixed;left:18px;top:50%;transform:translateY(-50%);z-index:100;display:flex;flex-direction:column;gap:2px;opacity:0;animation:fadein .6s ease 2.8s forwards}

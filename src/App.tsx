@@ -734,12 +734,25 @@ export default function App() {
       if (dragMoved) return;
       const m2 = new THREE.Vector2((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
       const rc = new THREE.Raycaster(); rc.setFromCamera(m2, cam);
+      // Include ALL clickable objects: planets, probes, moons, AND satellites
       const clickTargets = [...meshes, ...probeMeshes, ...naturalMoonMeshes];
       if (moonMesh) clickTargets.push(moonMesh);
-      const hits = rc.intersectObjects(clickTargets, false);
+      // Add visible satellite meshes
+      satDataRef.current.meshes.forEach(sm => { if (sm?.visible) clickTargets.push(sm); });
+      // Increase picking threshold for small objects
+      rc.params.Line = { threshold: 0.5 };
+      (rc.params as any).Points = { threshold: 0.5 };
+      const hits = rc.intersectObjects(clickTargets, true);
       if (hits.length) {
-        const d = hits[0].object.userData;
-        if (d.isMoon) showMoonInfo();
+        // Walk up to find userData (might be on parent Group)
+        let obj: THREE.Object3D | null = hits[0].object;
+        while (obj && !obj.userData?.isPlanet && !obj.userData?.isProbe && !obj.userData?.isMoon && !obj.userData?.isNaturalMoon && !obj.userData?.isSat) {
+          obj = obj.parent;
+        }
+        if (!obj) return;
+        const d = obj.userData;
+        if (d.isSat) (window as any).__focusSat(d.satIdx);
+        else if (d.isMoon) showMoonInfo();
         else if (d.isNaturalMoon) showNaturalMoonInfo(d);
         else if (d.isProbe) showProbeInfo(d.probeIdx);
         else if (d.isPlanet) focusObj(d.idx);
@@ -754,11 +767,14 @@ export default function App() {
       rc2.setFromCamera(m2v, cam);
       const hoverTargets = [...meshes, ...probeMeshes, ...naturalMoonMeshes];
       if (moonMesh) hoverTargets.push(moonMesh);
-      const hits = rc2.intersectObjects(hoverTargets, false);
+      satDataRef.current.meshes.forEach(sm => { if (sm?.visible) hoverTargets.push(sm); });
+      const hits = rc2.intersectObjects(hoverTargets, true);
       const tip = tipRef.current!;
       if (hits.length) {
-        const d = hits[0].object.userData;
-        tip.textContent = d.isMoon ? d.cn : d.isNaturalMoon ? d.cn : d.isSat ? (d.displayName || d.name) : d.isProbe ? d.cn : `${d.cn} ${d.n}`;
+        let hObj: THREE.Object3D | null = hits[0].object;
+        while (hObj && !hObj.userData?.isPlanet && !hObj.userData?.isProbe && !hObj.userData?.isMoon && !hObj.userData?.isNaturalMoon && !hObj.userData?.isSat) hObj = hObj.parent;
+        const d = hObj?.userData || hits[0].object.userData;
+        tip.textContent = d.isMoon ? d.cn : d.isNaturalMoon ? d.cn : d.isSat ? (d.displayName || d.name) : d.isProbe ? d.cn : (d.cn && d.n) ? `${d.cn} ${d.n}` : '';
         tip.style.left = (e.clientX + 14) + 'px'; tip.style.top = (e.clientY - 8) + 'px';
         tip.classList.add('show');
         if (!drag) document.body.style.cursor = 'pointer';
@@ -1369,15 +1385,19 @@ export default function App() {
           <div className="brand-cn">此刻太空</div>
         </div>
         <div className="layers">
-          {/* Desktop buttons */}
-          <button className="layer-btn on" ref={lSatRef} onClick={() => setSatListOpen(v => !v)}><span className="layer-dot" />卫星探测</button>
-          <button className="layer-btn on" id="__labelBtn" onClick={() => (window as any).__toggleLabels()}>名称</button>
-          <button className="layer-btn on" id="__orbitBtn" onClick={() => (window as any).__toggleOrbits()}>轨道</button>
-          <button className="layer-btn on" id="__soundBtn" onClick={() => (window as any).__toggleSound()}>音效</button>
-          <select className="layer-btn" style={{ background: 'var(--glass)', color: 'var(--text-dim)', fontSize: 10, padding: '4px 8px', borderRadius: 100, border: '1px solid var(--glass-edge)' }} onChange={e => (window as any).__setTrack(parseInt(e.target.value))}>
-            {TRACKS_LIST.map((tr, i) => <option key={i} value={i} style={{ background: '#080C1A' }}>{tr.name}</option>)}
+          {/* Primary: satellite panel toggle */}
+          <button className="layer-btn on" ref={lSatRef} onClick={() => setSatListOpen(v => !v)}><span className="layer-dot" />卫星</button>
+          {/* Compact toggles group */}
+          <div className="btn-group">
+            <button className="layer-btn compact on" id="__labelBtn" onClick={() => (window as any).__toggleLabels()} title="显示/隐藏名称">Aa</button>
+            <button className="layer-btn compact on" id="__orbitBtn" onClick={() => (window as any).__toggleOrbits()} title="显示/隐藏轨道">○</button>
+            <button className="layer-btn compact on" id="__soundBtn" onClick={() => (window as any).__toggleSound()} title="音效开关">♪</button>
+          </div>
+          {/* Audio track selector */}
+          <select className="track-select" onChange={e => (window as any).__setTrack(parseInt(e.target.value))} title="切换音效">
+            {TRACKS_LIST.map((tr, i) => <option key={i} value={i}>{tr.name}</option>)}
           </select>
-          {/* Mobile buttons — only shown on mobile via CSS */}
+          {/* Mobile buttons */}
           <button className="layer-btn mobile-btn on" onClick={() => setMobileNavOpen(v => !v)}>星体</button>
           <button className="layer-btn mobile-btn" onClick={() => setMobileSettingsOpen(v => !v)}>更多</button>
         </div>
