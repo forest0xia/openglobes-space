@@ -1385,21 +1385,8 @@ export default function App() {
           <div className="brand-cn">此刻太空</div>
         </div>
         <div className="layers">
-          {/* Primary: satellite panel toggle */}
           <button className="layer-btn on" ref={lSatRef} onClick={() => setSatListOpen(v => !v)}><span className="layer-dot" />卫星</button>
-          {/* Compact toggles group */}
-          <div className="btn-group">
-            <button className="layer-btn compact on" id="__labelBtn" onClick={() => (window as any).__toggleLabels()} title="显示/隐藏名称">Aa</button>
-            <button className="layer-btn compact on" id="__orbitBtn" onClick={() => (window as any).__toggleOrbits()} title="显示/隐藏轨道">○</button>
-            <button className="layer-btn compact on" id="__soundBtn" onClick={() => (window as any).__toggleSound()} title="音效开关">♪</button>
-          </div>
-          {/* Audio track selector */}
-          <select className="track-select" onChange={e => (window as any).__setTrack(parseInt(e.target.value))} title="切换音效">
-            {TRACKS_LIST.map((tr, i) => <option key={i} value={i}>{tr.name}</option>)}
-          </select>
-          {/* Mobile buttons */}
-          <button className="layer-btn mobile-btn on" onClick={() => setMobileNavOpen(v => !v)}>星体</button>
-          <button className="layer-btn mobile-btn" onClick={() => setMobileSettingsOpen(v => !v)}>更多</button>
+          <button className="layer-btn" onClick={() => setMobileSettingsOpen(v => !v)}>设置</button>
         </div>
       </div>
 
@@ -1456,7 +1443,7 @@ export default function App() {
 
       <div className="status">
         <div className="status-line"><span className="status-dot" style={{ background: 'var(--glow)' }} /><span ref={satCountRef}>— 颗卫星追踪中</span></div>
-        <div className="status-line"><span className="status-dot" style={{ background: 'var(--warm)' }} /><span>15 个深空探测器</span></div>
+        <div className="status-line"><span className="status-dot" style={{ background: 'var(--warm)' }} /><span>{PROBES.length} 个深空探测器</span></div>
       </div>
 
       {/* Satellite List Panel */}
@@ -1480,10 +1467,7 @@ export default function App() {
           </label>
           <div className="sat-list" style={{ maxHeight: '12vh', marginBottom: 8 }}>
             {PROBES.map((pr, i) => (
-              <div key={pr.id} className="sat-item" onClick={() => {
-                const pm = document.querySelector(`[data-probe-idx="${i}"]`);
-                if (pm) { (window as any).__focusProbeByIdx?.(i); }
-              }} style={{ cursor: 'pointer' }}>
+              <div key={pr.id} className="sat-item" onClick={() => (window as any).__focusProbeByIdx?.(i)} style={{ cursor: 'pointer' }}>
                 <span className="sat-dot" style={{ background: pr.color }} />
                 <span className="sat-name">{pr.nameCn}</span>
               </div>
@@ -1504,7 +1488,7 @@ export default function App() {
                   <input type="checkbox" checked={satGroups[g.id] ?? false} onChange={() => (window as any).__toggleSatGroup(g.id)} />
                   <span style={{ color: g.color }}>{g.labelCn}</span>
                   <span className="sat-count">{satellites.filter(s => s.groupId === g.id).length}</span>
-                  <span title={descriptions[g.id] || ''} style={{ cursor: 'help', color: 'var(--text-dim)', fontSize: 9, marginLeft: 4 }}>?</span>
+                  <span onClick={(e) => { e.preventDefault(); e.stopPropagation(); alert(descriptions[g.id] || ''); }} style={{ cursor: 'help', color: 'var(--glow)', fontSize: 11, marginLeft: 'auto', padding: '2px 8px', background: 'rgba(94,234,212,0.08)', borderRadius: 10, userSelect: 'none' }}>?</span>
                 </label>
               </div>
             );
