@@ -31,7 +31,9 @@ canvas{display:block;position:fixed;inset:0;z-index:1}
 /* ═══════ CINEMATIC INTRO ═══════ */
 .intro{position:fixed;inset:0;z-index:999;background:var(--void);display:flex;flex-direction:column;align-items:center;justify-content:center;transition:opacity 1.2s cubic-bezier(.4,0,.2,1);pointer-events:none}
 .intro.gone{opacity:0}
-.intro-line{overflow:hidden;height:1.3em;margin:2px 0}
+.intro-line{overflow:hidden;margin:2px 0}
+.intro-line:first-child{height:clamp(36px,6vw,60px)}
+.intro-line:last-child{height:22px}
 .intro-word{display:block;transform:translateY(100%);animation:rise .7s cubic-bezier(.16,1,.3,1) forwards}
 .intro-word.w1{animation-delay:.3s}
 .intro-word.w2{animation-delay:.6s;font-family:var(--font-cn);font-weight:200;font-size:14px;letter-spacing:6px;color:var(--text-dim)}

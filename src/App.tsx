@@ -81,10 +81,10 @@ export default function App() {
   const satBracketsRef = useRef<HTMLDivElement>(null);
   const [satListOpen, setSatListOpen] = useState(false);
   const [satellites, setSatellites] = useState<SatRecord[]>([]);
-  const [satGroups, setSatGroups] = useState<Record<string, boolean>>({ beidou: true, stations: true, gps: false });
+  const [satGroups, setSatGroups] = useState<Record<string, boolean>>({ beidou: true, stations: true, gps: false, starlink: false, visual: true });
 
   // Store refs accessible from inside useEffect
-  const satDataRef = useRef<{ sats: SatRecord[]; meshes: THREE.Mesh[]; groups: Record<string, boolean>; orbitLines: THREE.Line[]; trailLines: THREE.Line[] }>({ sats: [], meshes: [], groups: { beidou: true, stations: true, gps: false }, orbitLines: [], trailLines: [] });
+  const satDataRef = useRef<{ sats: SatRecord[]; meshes: THREE.Mesh[]; groups: Record<string, boolean>; orbitLines: THREE.Line[]; trailLines: THREE.Line[] }>({ sats: [], meshes: [], groups: { beidou: true, stations: true, gps: false, starlink: false, visual: true }, orbitLines: [], trailLines: [] });
 
   useEffect(() => {
     const scene = new THREE.Scene();
@@ -542,7 +542,7 @@ export default function App() {
       iNameRef.current!.textContent = dn;
       iNameRef.current!.style.color = sat.color;
       const groupLabel = SAT_GROUPS.find(g => g.id === sat.groupId)?.labelCn || sat.groupId;
-      iSubRef.current!.textContent = `🛰 ${groupLabel} · ${sat.name}`;
+      iSubRef.current!.textContent = `${groupLabel} · ${sat.name}`;
       const sr = sat.satrec as any;
       const periodMin = sr.no ? (2 * Math.PI / sr.no) : 0;
       const periodH = (periodMin / 60).toFixed(1);
@@ -716,7 +716,7 @@ export default function App() {
       const tip = tipRef.current!;
       if (hits.length) {
         const d = hits[0].object.userData;
-        tip.textContent = d.isMoon ? `\uD83C\uDF19 ${d.cn}` : d.isNaturalMoon ? `\uD83C\uDF19 ${d.cn}` : d.isSat ? `\uD83D\uDEF0 ${d.displayName || d.name}` : d.isProbe ? `\uD83D\uDEF0 ${d.cn}` : `${d.cn} ${d.n}`;
+        tip.textContent = d.isMoon ? d.cn : d.isNaturalMoon ? d.cn : d.isSat ? (d.displayName || d.name) : d.isProbe ? d.cn : `${d.cn} ${d.n}`;
         tip.style.left = (e.clientX + 14) + 'px'; tip.style.top = (e.clientY - 8) + 'px';
         tip.classList.add('show');
         if (!drag) document.body.style.cursor = 'pointer';
@@ -798,7 +798,7 @@ export default function App() {
 
       iNameRef.current!.textContent = pr.n.toUpperCase();
       iNameRef.current!.style.color = '#' + pr.col.toString(16).padStart(6, '0');
-      iSubRef.current!.textContent = `${pr.emoji} ${pr.cn} — 深空探测器`;
+      iSubRef.current!.textContent = `${pr.cn} — 深空探测器`;
       iFactRef.current!.textContent = pr.desc;
 
       const g = iGridRef.current!;
@@ -1163,8 +1163,8 @@ export default function App() {
             continue;
           }
 
-          // Trail: compute full trail first, then show. Recompute periodically.
-          if (satTrails[i]) {
+          // Trail: skip entirely at high speeds (orbits too fast for meaningful trails)
+          if (satTrails[i] && spd <= 3600) {
             const lastIdx = TRAIL_LEN - 1;
             // Compute full trail (staggered across frames, or on first frame for this satellite)
             if (!satTrailReady[i] || frameCount % 60 === (i % 60)) {
@@ -1196,7 +1196,8 @@ export default function App() {
             const line = satTrailLines[i];
             if (line) {
               // Only show trail after first full valid computation
-              line.visible = satTrailReady[i];
+              // Hide trails at high time speed (> 1hr/s) — orbits are too fast for meaningful trails
+              line.visible = satTrailReady[i] && spd <= 3600;
               line.geometry.attributes.position.needsUpdate = true;
               line.geometry.setDrawRange(0, TRAIL_LEN);
               const mat = line.material as THREE.ShaderMaterial;
@@ -1325,10 +1326,10 @@ export default function App() {
           <div className="brand-cn">此刻太空</div>
         </div>
         <div className="layers">
-          <button className="layer-btn on" ref={lSatRef} onClick={() => setSatListOpen(v => !v)}><span className="layer-dot" />🛰 卫星探测</button>
-          <button className="layer-btn on" id="__labelBtn" onClick={() => (window as any).__toggleLabels()}>🏷 名称</button>
-          <button className="layer-btn on" id="__orbitBtn" onClick={() => (window as any).__toggleOrbits()}>◎ 轨道</button>
-          <button className="layer-btn on" id="__soundBtn" onClick={() => (window as any).__toggleSound()}>🔊</button>
+          <button className="layer-btn on" ref={lSatRef} onClick={() => setSatListOpen(v => !v)}><span className="layer-dot" />卫星探测</button>
+          <button className="layer-btn on" id="__labelBtn" onClick={() => (window as any).__toggleLabels()}>名称</button>
+          <button className="layer-btn on" id="__orbitBtn" onClick={() => (window as any).__toggleOrbits()}>轨道</button>
+          <button className="layer-btn on" id="__soundBtn" onClick={() => (window as any).__toggleSound()}>音效</button>
         </div>
       </div>
 
@@ -1402,10 +1403,10 @@ export default function App() {
             const onUp = () => { el.style.transition = ''; window.removeEventListener('pointermove', onMove); window.removeEventListener('pointerup', onUp); };
             window.addEventListener('pointermove', onMove); window.addEventListener('pointerup', onUp);
           }} />
-          <div className="sat-panel-title">🛰 卫星与探测器</div>
+          <div className="sat-panel-title">卫星与探测器</div>
           <label className="info-toggle" style={{ marginBottom: 8 }}>
             <input type="checkbox" defaultChecked onChange={() => (window as any).__toggleL('probe')} />
-            <span>🚀 深空探测器</span>
+            <span>深空探测器</span>
           </label>
           <div className="sat-list" style={{ maxHeight: '12vh', marginBottom: 8 }}>
             {PROBES.map((pr, i) => (
@@ -1414,7 +1415,7 @@ export default function App() {
                 if (pm) { (window as any).__focusProbeByIdx?.(i); }
               }} style={{ cursor: 'pointer' }}>
                 <span className="sat-dot" style={{ background: pr.color }} />
-                <span className="sat-name">{pr.emoji} {pr.nameCn}</span>
+                <span className="sat-name">{pr.nameCn}</span>
               </div>
             ))}
           </div>

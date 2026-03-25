@@ -15,12 +15,15 @@ export interface SatGroup {
   labelCn: string;
   color: string;
   url: string;
+  maxCount?: number; // limit number of satellites loaded from this group
 }
 
 export const SAT_GROUPS: SatGroup[] = [
   { id: 'beidou', label: 'BeiDou', labelCn: '北斗', color: '#7EC8E3', url: 'https://celestrak.org/NORAD/elements/gp.php?GROUP=beidou&FORMAT=json' },
   { id: 'stations', label: 'Stations', labelCn: '空间站', color: '#F59E0B', url: 'https://celestrak.org/NORAD/elements/gp.php?GROUP=stations&FORMAT=json' },
   { id: 'gps', label: 'GPS', labelCn: 'GPS', color: '#3B82F6', url: 'https://celestrak.org/NORAD/elements/gp.php?GROUP=gps-ops&FORMAT=json' },
+  { id: 'starlink', label: 'Starlink', labelCn: 'Starlink', color: '#8B5CF6', url: 'https://celestrak.org/NORAD/elements/gp.php?GROUP=starlink&FORMAT=json', maxCount: 20 },
+  { id: 'visual', label: 'Brightest', labelCn: '明亮卫星', color: '#10B981', url: 'https://celestrak.org/NORAD/elements/gp.php?GROUP=visual&FORMAT=json' },
 ];
 
 export interface SatRecord {
@@ -162,7 +165,9 @@ async function fetchGroup(group: SatGroup): Promise<SatRecord[]> {
   try {
     const res = await fetch(group.url);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
+    let data = await res.json();
+    // Limit heavy groups (e.g. Starlink 6000+)
+    if (group.maxCount && data.length > group.maxCount) data = data.slice(0, group.maxCount);
     localStorage.setItem(cacheKey, JSON.stringify({ data, ts: Date.now() }));
     return parseOMMJson(data, group);
   } catch (err) {
