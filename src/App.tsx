@@ -10,6 +10,14 @@ import { createTrailMaterial, createTrailIndexAttribute } from './utils/trailSha
 import { getSatDisplayName } from './data/satNames';
 
 const h2n = (h: string) => parseInt(h.replace('#', ''), 16);
+
+const TRACKS_LIST = [
+  { file: 'space-ambient.mp3', name: '深空漂流' },
+  { file: 'cosmic-drift.mp3', name: '星际穿越' },
+  { file: 'stellar-pulse.mp3', name: '脉冲星' },
+  { file: 'solar-wind.mp3', name: '太阳风' },
+  { file: 'deep-nebula.mp3', name: '星云深处' },
+];
 const BASE = import.meta.env.BASE_URL;
 
 // Texture file map — loaded from public/textures/
@@ -80,6 +88,8 @@ export default function App() {
   const labelsRef = useRef<HTMLDivElement>(null);
   const satBracketsRef = useRef<HTMLDivElement>(null);
   const [satListOpen, setSatListOpen] = useState(false);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [mobileSettingsOpen, setMobileSettingsOpen] = useState(false);
   const [satellites, setSatellites] = useState<SatRecord[]>([]);
   const [satGroups, setSatGroups] = useState<Record<string, boolean>>({ beidou: true, stations: true, gps: false, starlink: false, visual: true });
 
@@ -103,19 +113,36 @@ export default function App() {
     cam.add(camLight);
     scene.add(cam);
 
-    // Space ambient audio
-    const audio = new Audio(BASE + 'audio/space-ambient.mp3');
+    // Multi-track space ambient audio
+    const TRACKS = [
+      { file: 'space-ambient.mp3', name: '深空漂流' },
+      { file: 'cosmic-drift.mp3', name: '星际穿越' },
+      { file: 'stellar-pulse.mp3', name: '脉冲星' },
+      { file: 'solar-wind.mp3', name: '太阳风' },
+      { file: 'deep-nebula.mp3', name: '星云深处' },
+    ];
+    let currentTrack = 0;
+    const audio = new Audio(BASE + 'audio/' + TRACKS[0].file);
     audio.loop = true;
     audio.volume = 0.15;
-    // Auto-play on first user interaction (browsers require interaction for audio)
     const startAudio = () => { audio.play().catch(() => {}); document.removeEventListener('click', startAudio); };
     document.addEventListener('click', startAudio);
 
     (window as any).__toggleSound = () => {
       audio.muted = !audio.muted;
-      document.getElementById('__soundBtn')!.textContent = audio.muted ? '\uD83D\uDD07' : '\uD83D\uDD0A';
-      document.getElementById('__soundBtn')!.classList.toggle('on', !audio.muted);
+      const btn = document.getElementById('__soundBtn');
+      if (btn) { btn.textContent = audio.muted ? '静音' : '音效'; btn.classList.toggle('on', !audio.muted); }
     };
+    (window as any).__setTrack = (idx: number) => {
+      currentTrack = idx;
+      const wasPlaying = !audio.paused;
+      audio.src = BASE + 'audio/' + TRACKS[idx].file;
+      audio.loop = true;
+      if (wasPlaying) audio.play().catch(() => {});
+    };
+    (window as any).__setVolume = (v: number) => { audio.volume = v; };
+    (window as any).__getTracks = () => TRACKS;
+    (window as any).__getCurrentTrack = () => currentTrack;
 
     const loader = new THREE.TextureLoader();
 
@@ -811,6 +838,7 @@ export default function App() {
     }
 
     (window as any).__focusProbeByIdx = (i: number) => showProbeInfo(i);
+    (window as any).__focusPlanetByIdx = (i: number) => focusObj(i);
 
     function showMoonInfo() {
       if (!moonMesh) return;
@@ -1326,10 +1354,17 @@ export default function App() {
           <div className="brand-cn">此刻太空</div>
         </div>
         <div className="layers">
+          {/* Desktop buttons */}
           <button className="layer-btn on" ref={lSatRef} onClick={() => setSatListOpen(v => !v)}><span className="layer-dot" />卫星探测</button>
           <button className="layer-btn on" id="__labelBtn" onClick={() => (window as any).__toggleLabels()}>名称</button>
           <button className="layer-btn on" id="__orbitBtn" onClick={() => (window as any).__toggleOrbits()}>轨道</button>
           <button className="layer-btn on" id="__soundBtn" onClick={() => (window as any).__toggleSound()}>音效</button>
+          <select className="layer-btn" style={{ background: 'var(--glass)', color: 'var(--text-dim)', fontSize: 10, padding: '4px 8px', borderRadius: 100, border: '1px solid var(--glass-edge)' }} onChange={e => (window as any).__setTrack(parseInt(e.target.value))}>
+            {TRACKS_LIST.map((tr, i) => <option key={i} value={i} style={{ background: '#080C1A' }}>{tr.name}</option>)}
+          </select>
+          {/* Mobile buttons — only shown on mobile via CSS */}
+          <button className="layer-btn mobile-btn on" onClick={() => setMobileNavOpen(v => !v)}>星体</button>
+          <button className="layer-btn mobile-btn" onClick={() => setMobileSettingsOpen(v => !v)}>更多</button>
         </div>
       </div>
 
@@ -1453,6 +1488,40 @@ export default function App() {
       <div className="tip" ref={tipRef} />
       <div ref={labelsRef} />
       <div ref={satBracketsRef} />
+
+      {/* Mobile nav panel — slide from left */}
+      <div className={`mobile-nav-panel ${mobileNavOpen ? 'open' : ''}`}>
+        <div className="mobile-section-title">太阳系</div>
+        {PLANETS.map((p, i) => (
+          <div key={p.id} className="mobile-toggle" onClick={() => { (window as any).__focusPlanetByIdx?.(i); setMobileNavOpen(false); }}>
+            <span style={{ width: 8, height: 8, borderRadius: '50%', background: p.color, flexShrink: 0 }} />
+            <span>{p.nameCn.split('—')[0].trim()}</span>
+          </div>
+        ))}
+      </div>
+      <div className={`mobile-nav-backdrop ${mobileNavOpen ? 'open' : ''}`} onClick={() => setMobileNavOpen(false)} />
+
+      {/* Mobile settings panel — slide from right */}
+      <div className={`mobile-settings ${mobileSettingsOpen ? 'open' : ''}`}>
+        <div className="mobile-section-title">显示设置</div>
+        <label className="mobile-toggle"><input type="checkbox" defaultChecked onChange={() => (window as any).__toggleLabels()} /><span>名称标签</span></label>
+        <label className="mobile-toggle"><input type="checkbox" defaultChecked onChange={() => (window as any).__toggleOrbits()} /><span>轨道线</span></label>
+        <div className="mobile-section-title">音效</div>
+        <label className="mobile-toggle"><input type="checkbox" defaultChecked onChange={() => (window as any).__toggleSound()} /><span>开启音效</span></label>
+        <div style={{ padding: '4px 0', fontSize: 11, color: '#5B6478' }}>
+          音量: <input type="range" min="0" max="1" step="0.05" defaultValue="0.15" onChange={e => (window as any).__setVolume(parseFloat(e.target.value))} style={{ width: 100, verticalAlign: 'middle' }} />
+        </div>
+        {TRACKS_LIST.map((tr, i) => (
+          <div key={i} className="mobile-toggle" style={{ cursor: 'pointer', fontSize: 12 }} onClick={() => (window as any).__setTrack(i)}>
+            <span style={{ color: '#5EEAD4', fontSize: 10 }}>♪</span>
+            <span>{tr.name}</span>
+          </div>
+        ))}
+        <div className="mobile-section-title">卫星</div>
+        <label className="mobile-toggle"><input type="checkbox" defaultChecked onChange={() => setSatListOpen(v => !v)} /><span>卫星面板</span></label>
+        <label className="mobile-toggle"><input type="checkbox" defaultChecked onChange={() => (window as any).__toggleL('probe')} /><span>深空探测器</span></label>
+      </div>
+      <div className={`mobile-nav-backdrop ${mobileSettingsOpen ? 'open' : ''}`} onClick={() => setMobileSettingsOpen(false)} />
     </>
   );
 }
