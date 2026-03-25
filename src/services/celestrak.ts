@@ -130,7 +130,8 @@ function parseOMMJson(data: any[], group: SatGroup): SatRecord[] {
   // Filter: validate SGP4 propagation and exclude debris/junk
   const validated: SatRecord[] = [];
   const now = new Date();
-  const JUNK_PATTERNS = /^(ISS OBJECT|FREGAT DEB|CZ-|SL-|ATLAS |DELTA |FALCON |H-2|ARIANE|BREEZE|COSMOS \d+ DEB|IRIDIUM \d+ DEB)/i;
+  // Filter out debris and rocket bodies — keep space station modules and crew vehicles
+  const JUNK_PATTERNS = /^(ISS OBJECT|FREGAT DEB|CZ-\d|SL-\d|ATLAS \d|DELTA \d|H-2A|H-2B|ARIANE|BREEZE|COSMOS \d+ DEB|IRIDIUM \d+ DEB|VEGA|ELECTRON)/i;
   for (const rec of records) {
     // Skip debris and rocket bodies
     if (JUNK_PATTERNS.test(rec.name)) continue;

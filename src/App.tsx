@@ -170,29 +170,10 @@ export default function App() {
     });
 
     // Solar system marker — tiny glowing dot, visible when sun is sub-pixel
+    // Simple gold pixel dot — visible when sun is sub-pixel at galaxy scale
     const solarMarker = new THREE.Mesh(
-      new THREE.SphereGeometry(1, 16, 16),
-      new THREE.ShaderMaterial({
-        uniforms: { glowColor: { value: new THREE.Vector3(0.5, 0.8, 1.0) } },
-        vertexShader: `
-          varying vec3 vNormal; varying vec3 vViewDir;
-          void main() {
-            vNormal = normalize(normalMatrix * normal);
-            vec4 mv = modelViewMatrix * vec4(position, 1.0);
-            vViewDir = normalize(-mv.xyz);
-            gl_Position = projectionMatrix * mv;
-          }
-        `,
-        fragmentShader: `
-          uniform vec3 glowColor; varying vec3 vNormal; varying vec3 vViewDir;
-          void main() {
-            float rim = pow(1.0 - abs(dot(vNormal, vViewDir)), 2.0);
-            float core = exp(-length(vViewDir) * 0.5) * 0.5;
-            gl_FragColor = vec4(glowColor, max(rim, core) * 0.9);
-          }
-        `,
-        transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
-      })
+      new THREE.SphereGeometry(0.5, 8, 8),
+      new THREE.MeshBasicMaterial({ color: 0xFFD700 })
     );
     solarMarker.visible = false;
     scene.add(solarMarker);
@@ -747,7 +728,7 @@ export default function App() {
     const REAL_KM: Record<string, number> = {};
     PLANETS.forEach(p => { REAL_KM[p.id] = p.realRadiusKm; });
     const SUN_SCENE_R = P[0].r; // current sun radius in scene = 4.8
-    let realScale = true; // default on
+    const realScale = true; // always real proportions
     const origRadii = P.map(p => p.r);
     // Base scale for each planet — 1.0 normally, tiny ratio in real-scale mode
     function baseScale(i: number): number {
@@ -763,11 +744,7 @@ export default function App() {
       });
     }
 
-    (window as any).__toggleScale = () => {
-      realScale = !realScale;
-      document.getElementById('__scaleBtn')?.classList.toggle('on', realScale);
-      applyAllScales();
-    };
+    // (scale toggle removed — always real proportions)
 
     // ═══════ FOCUS / INFO ═══════
     let focIdx = -1;
@@ -940,9 +917,7 @@ export default function App() {
     };
     updSpd();
     (window as any).__resetCam = () => { tA = { t: 0.3, p: Math.PI / 3 }; tD = 105; tT.set(0, 0, 0); (window as any).__closeInfo(); };
-    const layers = { sat: true, probe: false };
-    // Hide probes on initial load
-    probeMeshes.forEach(m => m.visible = false);
+    const layers = { sat: true, probe: true }; // probes visible by default
     (window as any).__toggleL = (k: string) => {
       (layers as any)[k] = !(layers as any)[k];
       (k === 'sat' ? lSatRef : lProbeRef).current!.classList.toggle('on', (layers as any)[k]);
@@ -1352,11 +1327,9 @@ export default function App() {
           <div className="brand-cn">此刻太空</div>
         </div>
         <div className="layers">
-          <button className="layer-btn on" ref={lSatRef} onClick={() => setSatListOpen(v => !v)}><span className="layer-dot" />🛰 卫星</button>
-          <button className="layer-btn" ref={lProbeRef} onClick={() => (window as any).__toggleL('probe')}><span className="layer-dot" />探测器</button>
+          <button className="layer-btn on" ref={lSatRef} onClick={() => setSatListOpen(v => !v)}><span className="layer-dot" />🛰 卫星探测</button>
           <button className="layer-btn on" id="__labelBtn" onClick={() => (window as any).__toggleLabels()}>🏷 名称</button>
           <button className="layer-btn on" id="__orbitBtn" onClick={() => (window as any).__toggleOrbits()}>◎ 轨道</button>
-          <button className="layer-btn on" id="__scaleBtn" onClick={() => (window as any).__toggleScale()}>⚖ 真实比例</button>
           <button className="layer-btn on" id="__soundBtn" onClick={() => (window as any).__toggleSound()}>🔊</button>
         </div>
       </div>
@@ -1431,7 +1404,12 @@ export default function App() {
             const onUp = () => { el.style.transition = ''; window.removeEventListener('pointermove', onMove); window.removeEventListener('pointerup', onUp); };
             window.addEventListener('pointermove', onMove); window.addEventListener('pointerup', onUp);
           }} />
-          <div className="sat-panel-title">🛰 卫星星座</div>
+          <div className="sat-panel-title">🛰 卫星与探测器</div>
+          <label className="info-toggle" style={{ marginBottom: 8 }}>
+            <input type="checkbox" defaultChecked onChange={() => (window as any).__toggleL('probe')} />
+            <span>🚀 深空探测器</span>
+          </label>
+          <div className="sat-panel-divider" />
           {SAT_GROUPS.map(g => (
             <div key={g.id} className="sat-group">
               <label className="info-toggle">
