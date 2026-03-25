@@ -8,13 +8,11 @@ export type FocusTarget =
   | null;
 
 interface SpaceStore {
-  // Time simulation
-  simulationTime: number;
+  // Time — only UI-driven state here. Actual sim time lives in utils/simTime.ts
   timeSpeed: number;
   isPaused: boolean;
   setTimeSpeed: (speed: number) => void;
   togglePause: () => void;
-  advanceTime: (dt: number) => void;
 
   // Camera / focus
   focusTarget: FocusTarget;
@@ -27,21 +25,20 @@ interface SpaceStore {
   toggleSatellites: () => void;
   toggleProbes: () => void;
 
+  // Tooltip
+  tooltip: { text: string; x: number; y: number } | null;
+  setTooltip: (t: { text: string; x: number; y: number } | null) => void;
+
   // Loading
   isLoaded: boolean;
   setLoaded: () => void;
 }
 
 export const useStore = create<SpaceStore>((set) => ({
-  simulationTime: 0,
   timeSpeed: 1,
   isPaused: false,
   setTimeSpeed: (speed) => set({ timeSpeed: speed }),
   togglePause: () => set((s) => ({ isPaused: !s.isPaused })),
-  advanceTime: (dt) =>
-    set((s) => ({
-      simulationTime: s.isPaused ? s.simulationTime : s.simulationTime + dt * s.timeSpeed * 0.3,
-    })),
 
   focusTarget: null,
   setFocusTarget: (target) => set({ focusTarget: target }),
@@ -51,6 +48,9 @@ export const useStore = create<SpaceStore>((set) => ({
   showProbes: true,
   toggleSatellites: () => set((s) => ({ showSatellites: !s.showSatellites })),
   toggleProbes: () => set((s) => ({ showProbes: !s.showProbes })),
+
+  tooltip: null,
+  setTooltip: (t) => set({ tooltip: t }),
 
   isLoaded: false,
   setLoaded: () => set({ isLoaded: true }),

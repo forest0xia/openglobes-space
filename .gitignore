@@ -2,3 +2,4 @@ node_modules
 dist
 *.png
 .playwright-mcp
+.DS_Store
