@@ -91,10 +91,10 @@ export default function App() {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [mobileSettingsOpen, setMobileSettingsOpen] = useState(false);
   const [satellites, setSatellites] = useState<SatRecord[]>([]);
-  const [satGroups, setSatGroups] = useState<Record<string, boolean>>({ beidou: true, stations: true, gps: false, starlink: false, visual: true });
+  const [satGroups, setSatGroups] = useState<Record<string, boolean>>({ beidou: true, stations: true, gps: false, starlink: false, visual: false });
 
   // Store refs accessible from inside useEffect
-  const satDataRef = useRef<{ sats: SatRecord[]; meshes: THREE.Mesh[]; groups: Record<string, boolean>; orbitLines: THREE.Line[]; trailLines: THREE.Line[] }>({ sats: [], meshes: [], groups: { beidou: true, stations: true, gps: false, starlink: false, visual: true }, orbitLines: [], trailLines: [] });
+  const satDataRef = useRef<{ sats: SatRecord[]; meshes: THREE.Mesh[]; groups: Record<string, boolean>; orbitLines: THREE.Line[]; trailLines: THREE.Line[] }>({ sats: [], meshes: [], groups: { beidou: true, stations: true, gps: false, starlink: false, visual: false }, orbitLines: [], trailLines: [] });
 
   useEffect(() => {
     const scene = new THREE.Scene();
@@ -482,7 +482,9 @@ export default function App() {
       // Scale probes to be visible but much smaller than planets
       // Real probes are ~10-20m, Earth radius = 6371km = 1 scene unit
       // We exaggerate to ~0.05 scene units (~318km) for visibility
-      pm.scale.setScalar(0.15);
+      // Real probes are ~10-20m. Earth radius = 1 scene unit = 6371km.
+      // Visible scale: 0.02 = ~127km — still hugely exaggerated but much better than 0.15
+      pm.scale.setScalar(0.02);
       pm.userData = { ...pr, isProbe: true, probeIdx: i };
       scene.add(pm); probeMeshes.push(pm);
     });
@@ -564,7 +566,20 @@ export default function App() {
       const sat = satDataRef.current.sats[idx];
       if (!sm || !sat) return;
       focIdx = -1;
-      tT.copy(sm.position); tD = fitDistance(Math.max(sm.scale?.x || 0.01, 0.01));
+      tT.copy(sm.position);
+      tD = fitDistance(Math.max(sm.scale?.x || 0.01, 0.01));
+      // For LEO/MEO satellites: set camera angle to look from behind satellite toward Earth
+      // This prevents the camera from being between the satellite and Earth (inside Earth)
+      const eIdx2 = P.findIndex(pp => pp.id === 'earth');
+      if (eIdx2 >= 0) {
+        const satToEarth = new THREE.Vector3().subVectors(meshes[eIdx2].position, sm.position);
+        if (satToEarth.length() > 0.01) {
+          // Camera angle: point away from Earth (behind the satellite)
+          const dir = satToEarth.normalize();
+          tA.t = Math.atan2(dir.x, dir.z) + Math.PI; // opposite direction
+          tA.p = Math.acos(Math.max(-0.99, Math.min(0.99, dir.y))) * 0.7 + 0.3;
+        }
+      }
       const dn = getSatDisplayName(sat.name, sat.noradId);
       iNameRef.current!.textContent = dn;
       iNameRef.current!.style.color = sat.color;
@@ -1145,7 +1160,8 @@ export default function App() {
         const eIdx = P.findIndex(p => p.id === 'earth');
         const ep = meshes[eIdx].position;
         const sc = baseScale(eIdx);
-        const baseSatSize = sc * earthSceneR * 0.005;
+        // Satellite visual size — proportional to Earth, very small
+        const baseSatSize = sc * earthSceneR * 0.002;
 
         // Hide all satellites + trails when Earth is too small on screen
         const earthScreenForSats = getScreenSize(meshes[eIdx], cam, earthSceneR * sc);
@@ -1251,22 +1267,21 @@ export default function App() {
       const lf = 1 - Math.pow(.008, dt);
       cA.t += (tA.t - cA.t) * lf; cA.p += (tA.p - cA.p) * lf;
       cD += (tD - cD) * lf; cT.lerp(tT, lf);
-      // Prevent camera from entering any object's interior
-      // Only clamp against objects the camera is actually close to
-      let surfaceLimit = 0.005;
+      // Prevent camera from entering any planet's interior
+      // After computing cam position, check against all visible planets and push out if inside
       const camPos = cam.position;
       meshes.forEach((m, idx) => {
-        if (!m.visible) return;
+        if (!m.visible || P[idx].sun) return;
         const camToObj = camPos.distanceTo(m.position);
-        const r = baseScale(idx) * P[idx].r * 1.05;
-        if (camToObj < r) surfaceLimit = Math.max(surfaceLimit, r - camToObj + 0.01);
+        const r = baseScale(idx) * P[idx].r * 1.1;
+        if (camToObj < r && r > 0.001) {
+          // Camera is inside this planet — push camera outward along the camera-to-planet direction
+          const pushDir = camPos.clone().sub(m.position).normalize();
+          cam.position.copy(m.position).add(pushDir.multiplyScalar(r));
+          cD = Math.max(cD, r);
+          tD = Math.max(tD, r);
+        }
       });
-      if (moonMesh && moonMesh.visible) {
-        const camToMoon = camPos.distanceTo(moonMesh.position);
-        const moonR = moonMesh.scale.x * 0.27 * 1.05;
-        if (camToMoon < moonR) surfaceLimit = Math.max(surfaceLimit, moonR - camToMoon + 0.01);
-      }
-      if (surfaceLimit > 0.005) { cD = Math.max(cD, surfaceLimit); tD = Math.max(tD, surfaceLimit); }
       cam.position.set(cT.x + cD * Math.sin(cA.p) * Math.cos(cA.t), cT.y + cD * Math.cos(cA.p), cT.z + cD * Math.sin(cA.p) * Math.sin(cA.t));
       cam.lookAt(cT);
       // Dynamic near/far plane — prevents clipping when zoomed very close
@@ -1455,15 +1470,25 @@ export default function App() {
             ))}
           </div>
           <div className="sat-panel-divider" />
-          {SAT_GROUPS.map(g => (
-            <div key={g.id} className="sat-group">
-              <label className="info-toggle">
-                <input type="checkbox" checked={satGroups[g.id] ?? false} onChange={() => (window as any).__toggleSatGroup(g.id)} />
-                <span style={{ color: g.color }}>{g.labelCn}</span>
-                <span className="sat-count">{satellites.filter(s => s.groupId === g.id).length}</span>
-              </label>
-            </div>
-          ))}
+          {SAT_GROUPS.map(g => {
+            const descriptions: Record<string, string> = {
+              beidou: '中国北斗卫星导航系统，中圆/地球同步轨道(MEO/GEO)，高度约21,500-35,786km',
+              stations: '国际空间站(ISS)、中国空间站(CSS)等载人航天器，近地轨道(LEO)约400km',
+              gps: '美国全球定位系统，中圆轨道(MEO)约20,200km，共31颗在轨卫星',
+              starlink: 'SpaceX星链互联网卫星星座，近地轨道(LEO)约550km，在轨6000+颗（展示前20颗）',
+              visual: '地面肉眼可见的明亮卫星（约100颗），多数在近地轨道(LEO)200-2000km',
+            };
+            return (
+              <div key={g.id} className="sat-group">
+                <label className="info-toggle">
+                  <input type="checkbox" checked={satGroups[g.id] ?? false} onChange={() => (window as any).__toggleSatGroup(g.id)} />
+                  <span style={{ color: g.color }}>{g.labelCn}</span>
+                  <span className="sat-count">{satellites.filter(s => s.groupId === g.id).length}</span>
+                  <span title={descriptions[g.id] || ''} style={{ cursor: 'help', color: 'var(--text-dim)', fontSize: 9, marginLeft: 4 }}>?</span>
+                </label>
+              </div>
+            );
+          })}
           {satellites.length > 0 && (
             <>
               <div className="sat-panel-divider" />
