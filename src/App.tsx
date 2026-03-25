@@ -76,7 +76,7 @@ export default function App() {
   const tSliderRef = useRef<HTMLInputElement>(null);
   const satCountRef = useRef<HTMLSpanElement>(null);
   const lSatRef = useRef<HTMLButtonElement>(null);
-  const lProbeRef = useRef<HTMLButtonElement>(null);
+  // (lProbeRef removed — probe toggle is now in satellite panel)
   const labelsRef = useRef<HTMLDivElement>(null);
   const satBracketsRef = useRef<HTMLDivElement>(null);
   const [satListOpen, setSatListOpen] = useState(false);
@@ -452,6 +452,10 @@ export default function App() {
     PR.forEach((pr, i) => {
       const probeId = probeIds[i] || 'default';
       const pm = createProbeModel(probeId, pr.col) as any as THREE.Mesh;
+      // Scale probes to be visible but much smaller than planets
+      // Real probes are ~10-20m, Earth radius = 6371km = 1 scene unit
+      // We exaggerate to ~0.05 scene units (~318km) for visibility
+      pm.scale.setScalar(0.15);
       pm.userData = { ...pr, isProbe: true, probeIdx: i };
       scene.add(pm); probeMeshes.push(pm);
     });
@@ -790,7 +794,7 @@ export default function App() {
 
     function showProbeInfo(i: number) {
       const pr = PR[i]; focIdx = -1;
-      tT.copy(probeMeshes[i].position); tD = fitDistance(0.3); // probes are ~0.3 scene units
+      tT.copy(probeMeshes[i].position); tD = fitDistance(0.05); // probes scaled to ~0.05
 
       iNameRef.current!.textContent = pr.n.toUpperCase();
       iNameRef.current!.style.color = '#' + pr.col.toString(16).padStart(6, '0');
@@ -805,6 +809,8 @@ export default function App() {
       iExtrasRef.current!.innerHTML = '';
       infoRef.current!.classList.add('open');
     }
+
+    (window as any).__focusProbeByIdx = (i: number) => showProbeInfo(i);
 
     function showMoonInfo() {
       if (!moonMesh) return;
@@ -907,7 +913,6 @@ export default function App() {
     const layers = { sat: true, probe: true }; // probes visible by default
     (window as any).__toggleL = (k: string) => {
       (layers as any)[k] = !(layers as any)[k];
-      (k === 'sat' ? lSatRef : lProbeRef).current!.classList.toggle('on', (layers as any)[k]);
       if (k === 'probe') probeMeshes.forEach(m => m.visible = layers.probe);
     };
 
@@ -1087,15 +1092,17 @@ export default function App() {
       });
 
       const tAngle = t * EARTH_RATE; // normalized orbital angle progress
+      // Hide all probes when Earth < 1/5000 screen
+      const earthScreenForProbes = getScreenSize(meshes[P.findIndex(pp => pp.id === 'earth')], cam, baseScale(P.findIndex(pp => pp.id === 'earth')) * P.find(pp => pp.id === 'earth')!.r);
       PR.forEach((pr, i) => {
-        const m = probeMeshes[i]; if (!m.visible) return;
+        const m = probeMeshes[i];
+        if (!layers.probe || earthScreenForProbes < innerHeight / 5000) { m.visible = false; return; }
+        m.visible = true;
         if (pr.orb !== undefined) {
-          // Orbiting a planet — slow realistic orbit
           const pp = meshes[pr.orb].position;
-          const a = tAngle * 0.5 + i * 2.3; // slow orbit
+          const a = tAngle * 0.5 + i * 2.3;
           m.position.set(pp.x + Math.cos(a) * (pr.od || 3), pp.y, pp.z + Math.sin(a) * (pr.od || 3));
         } else {
-          // Deep space — very slow drift, no Y bouncing
           const da = pr.ang + tAngle * 0.001;
           m.position.set(Math.cos(da) * pr.dist, 0, Math.sin(da) * pr.dist);
         }
@@ -1400,6 +1407,17 @@ export default function App() {
             <input type="checkbox" defaultChecked onChange={() => (window as any).__toggleL('probe')} />
             <span>🚀 深空探测器</span>
           </label>
+          <div className="sat-list" style={{ maxHeight: '12vh', marginBottom: 8 }}>
+            {PROBES.map((pr, i) => (
+              <div key={pr.id} className="sat-item" onClick={() => {
+                const pm = document.querySelector(`[data-probe-idx="${i}"]`);
+                if (pm) { (window as any).__focusProbeByIdx?.(i); }
+              }} style={{ cursor: 'pointer' }}>
+                <span className="sat-dot" style={{ background: pr.color }} />
+                <span className="sat-name">{pr.emoji} {pr.nameCn}</span>
+              </div>
+            ))}
+          </div>
           <div className="sat-panel-divider" />
           {SAT_GROUPS.map(g => (
             <div key={g.id} className="sat-group">
