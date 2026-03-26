@@ -601,11 +601,20 @@ export default function App() {
             scene.add(sm);
             sd.meshes.push(sm);
             sd.sats.push(sat);
-            // No trail for Starlink (too many)
-            satTrails.push(new Float32Array(TRAIL_LEN * 3));
+            // Starlink trails — white contrails like other satellites
+            const slTrailArr = new Float32Array(TRAIL_LEN * 3);
+            satTrails.push(slTrailArr);
             satTrailIdx.push(0);
             satTrailReady.push(false);
-            satTrailLines.push(null as any);
+            const slTrailGeo = new THREE.BufferGeometry();
+            slTrailGeo.setAttribute('position', new THREE.BufferAttribute(slTrailArr, 3));
+            slTrailGeo.setAttribute('trailIndex', createTrailIndexAttribute(TRAIL_LEN));
+            slTrailGeo.setDrawRange(0, 0);
+            const slTrailLine = new THREE.Line(slTrailGeo, createTrailMaterial('#ffffff'));
+            slTrailLine.visible = false;
+            slTrailLine.frustumCulled = false;
+            scene.add(slTrailLine);
+            satTrailLines.push(slTrailLine);
           });
           setStarlinkProgress(50 + Math.round((b / newSats.length) * 50));
           // Yield to UI
@@ -724,7 +733,8 @@ export default function App() {
         const el = labelEls[i];
         if (!mesh.visible) { el.style.display = 'none'; return; }
         // For satellites: hide when Earth < 1/100 screen
-        if (type === 'sat' && earthScreenL < innerHeight / 100) { el.style.display = 'none'; return; }
+        // Hide satellite labels when Earth < 1/1000 screen (too zoomed out, labels overlap)
+        if (type === 'sat' && earthScreenL < innerHeight / 1000) { el.style.display = 'none'; return; }
         // For natural moons: hide when their parent planet < 1/100 screen
         if (type === 'moon') {
           const pIdx = mesh.userData?.parentIdx ?? earthIdxL;
@@ -740,12 +750,23 @@ export default function App() {
         const x = (labelVec.x * .5 + .5) * innerWidth;
         const y = (labelVec.y * -.5 + .5) * innerHeight;
         el.style.display = 'block';
-        // Offset label to upper-right, proportional to screen size of the object
         const screenR = objScreenSz / 2;
-        const offset = Math.max(screenR + 4, 6); // minimum 6px, otherwise just past the edge
-        el.style.left = (x + offset) + 'px';
-        el.style.top = (y - Math.max(screenR * 0.3, 4)) + 'px';
-        el.style.fontSize = type === 'planet' ? '14px' : type === 'moon' ? '10px' : '9px';
+        if (type === 'sat') {
+          // Satellites: label centered directly above, very close
+          el.style.left = x + 'px';
+          el.style.top = (y - Math.max(screenR, 3) - 10) + 'px';
+          el.style.transform = 'translateX(-50%)';
+          el.style.textAlign = 'center';
+          el.style.fontSize = '8px';
+        } else {
+          // Planets/moons/probes: label to upper-right
+          const offset = Math.max(screenR + 4, 6);
+          el.style.left = (x + offset) + 'px';
+          el.style.top = (y - Math.max(screenR * 0.3, 4)) + 'px';
+          el.style.transform = '';
+          el.style.textAlign = 'left';
+          el.style.fontSize = type === 'planet' ? '14px' : type === 'moon' ? '10px' : '9px';
+        }
       });
     }
 
@@ -1082,10 +1103,10 @@ export default function App() {
     const bracketVec = new THREE.Vector3();
 
     function updateSatBrackets(sd: typeof satDataRef.current, camera: THREE.Camera, earthScale: number) {
-      // Only show brackets when Earth is visible at reasonable size (not too zoomed out)
+      // Show brackets when Earth > 1/1000 screen, hide when smaller
       const eIdx4 = P.findIndex(p => p.id === 'earth');
       const earthScreen = getScreenSize(meshes[eIdx4], camera, earthSceneR * earthScale);
-      const showBrackets = earthScreen > innerHeight * 0.01; // Earth > 1% of screen
+      const showBrackets = earthScreen > innerHeight / 1000;
 
       // Lazy-create bracket elements
       while (bracketEls.length < sd.meshes.length) {
