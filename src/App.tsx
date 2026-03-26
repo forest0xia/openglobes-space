@@ -259,6 +259,7 @@ export default function App() {
 
     // ═══════ PLANETS ═══════
     const meshes: THREE.Mesh[] = [];
+    const glowMeshes: THREE.Mesh[] = [];
     const orbitLines: (THREE.Line | Line2)[] = [];
     // (glow outlines removed)
     let earthCloudMesh: THREE.Mesh | null = null;
@@ -283,48 +284,172 @@ export default function App() {
           });
       const m = new THREE.Mesh(new THREE.SphereGeometry(p.r, 64, 64), mat);
 
-      if (p.sun) {
-        // Light pulse rings — expand outward simulating light propagation
-        // Light travel time Sun→Earth: 499 seconds. In scene units: Earth at d=20, so speed = 20/499 = ~0.04 units/s
-        // Radial corona glow — a gradient shell that fades outward
-        // Uses a custom shader for radial transparency falloff
-        const coronaMat = new THREE.ShaderMaterial({
+      // Atmosphere glow — based on Three.js official Earth example (webgpu_tsl_earth)
+      // Ported from TSL to GLSL: BackSide sphere, fresnel remap, sun-aware color blend
+      const ATMO_VERT = `
+        varying vec3 vNormalW;
+        varying vec3 vPosW;
+        void main() {
+          vNormalW = normalize((modelMatrix * vec4(normal, 0.0)).xyz);
+          vPosW = (modelMatrix * vec4(position, 1.0)).xyz;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `;
+      const ATMO_FRAG = `
+        uniform vec3 dayColor;
+        uniform vec3 twilightColor;
+        uniform vec3 sunPos;
+        uniform vec3 camPos;
+        uniform float fresnelLow;   // remap lower edge (default 0.73)
+        uniform float fresnelPow;   // pow exponent (default 3.0)
+        uniform float sunFadeMin;   // smoothstep min (default -0.5)
+        uniform float sunFadeMax;   // smoothstep max (default 1.0)
+        uniform float isSun;
+        varying vec3 vNormalW;
+        varying vec3 vPosW;
+        void main() {
+          vec3 viewDir = normalize(vPosW - camPos);
+          vec3 n = normalize(vNormalW);
+          float fresnel = 1.0 - abs(dot(viewDir, n));
+
+          if (isSun > 0.5) {
+            // Sun: simple radial glow, no sun-awareness
+            float alpha = pow(max(1.0 - (fresnel - fresnelLow) / (1.0 - fresnelLow), 0.0), fresnelPow);
+            gl_FragColor = vec4(dayColor, alpha);
+            return;
+          }
+
+          vec3 sunDir = normalize(sunPos - vPosW);
+          float sunOrientation = dot(n, sunDir);
+
+          // Color: blend twilight → day based on sun angle
+          vec3 atmosphereColor = mix(twilightColor, dayColor, smoothstep(-0.25, 0.75, sunOrientation));
+
+          // Alpha: remap fresnel — visible at rim, transparent at very edge
+          float remapped = 1.0 - (fresnel - fresnelLow) / (1.0 - fresnelLow);
+          float alpha = pow(max(remapped, 0.0), fresnelPow);
+
+          // Sun modulation: fade out on shadow side
+          alpha *= smoothstep(sunFadeMin, sunFadeMax, sunOrientation);
+
+          gl_FragColor = vec4(atmosphereColor, alpha);
+        }
+      `;
+
+      interface AtmoCfg {
+        scale: number;
+        dayColor: [number, number, number];
+        twilightColor: [number, number, number];
+        fresnelLow: number;
+        fresnelPow: number;
+        sunFadeMin: number;
+        sunFadeMax: number;
+        isSun?: boolean;
+      }
+      function addAtmosphere(parent: THREE.Mesh, cfg: AtmoCfg) {
+        const mat = new THREE.ShaderMaterial({
           uniforms: {
-            glowColor: { value: new THREE.Vector3(1.0, 0.85, 0.4) },
-            innerR: { value: p.r * 0.98 },
-            outerR: { value: p.r * 1.8 },
+            dayColor: { value: new THREE.Vector3(...cfg.dayColor) },
+            twilightColor: { value: new THREE.Vector3(...cfg.twilightColor) },
+            sunPos: { value: new THREE.Vector3() },
+            camPos: { value: new THREE.Vector3() },
+            fresnelLow: { value: cfg.fresnelLow },
+            fresnelPow: { value: cfg.fresnelPow },
+            sunFadeMin: { value: cfg.sunFadeMin },
+            sunFadeMax: { value: cfg.sunFadeMax },
+            isSun: { value: cfg.isSun ? 1.0 : 0.0 },
           },
-          vertexShader: `
-            varying vec3 vWorldPos;
-            varying vec3 vCenter;
-            void main() {
-              vec4 wp = modelMatrix * vec4(position, 1.0);
-              vWorldPos = wp.xyz;
-              vCenter = (modelMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
-              gl_Position = projectionMatrix * viewMatrix * wp;
-            }
-          `,
-          fragmentShader: `
-            uniform vec3 glowColor;
-            uniform float innerR;
-            uniform float outerR;
-            varying vec3 vWorldPos;
-            varying vec3 vCenter;
-            void main() {
-              float dist = length(vWorldPos - vCenter);
-              // Bright near surface (innerR), rapid falloff to transparent at outerR
-              float t = clamp((dist - innerR) / (outerR - innerR), 0.0, 1.0);
-              float glow = (1.0 - t) * (1.0 - t) * 0.7; // quadratic falloff
-              gl_FragColor = vec4(glowColor, glow);
-            }
-          `,
+          vertexShader: ATMO_VERT,
+          fragmentShader: ATMO_FRAG,
+          side: THREE.BackSide,
           transparent: true,
           depthWrite: false,
-          side: THREE.FrontSide,
-          blending: THREE.AdditiveBlending,
         });
-        const corona = new THREE.Mesh(new THREE.SphereGeometry(p.r * 1.8, 48, 48), coronaMat);
-        m.add(corona);
+        const gm = new THREE.Mesh(new THREE.SphereGeometry(p.r * cfg.scale, 48, 48), mat);
+        gm.userData.isGlow = true;
+        gm.userData.glowMat = mat;
+        gm.userData.planetId = p.id;
+        parent.add(gm);
+        glowMeshes.push(gm);
+      }
+
+      // Surface atmosphere haze — FrontSide, covers sunlit hemisphere
+      // Matches Three.js example: atmosphereMix = fresnel^2 * smoothstep(-0.5, 1, sunOrientation)
+      const SURFACE_ATMO_FRAG = `
+        uniform vec3 dayColor;
+        uniform vec3 twilightColor;
+        uniform vec3 sunPos;
+        uniform vec3 camPos;
+        uniform float strength;
+        varying vec3 vNormalW;
+        varying vec3 vPosW;
+        void main() {
+          vec3 viewDir = normalize(vPosW - camPos);
+          vec3 n = normalize(vNormalW);
+          vec3 sunDir = normalize(sunPos - vPosW);
+          float fresnel = 1.0 - abs(dot(viewDir, n));
+          float sunOrientation = dot(n, sunDir);
+          vec3 atmoColor = mix(twilightColor, dayColor, smoothstep(-0.25, 0.75, sunOrientation));
+          float atmosphereMix = fresnel * fresnel * smoothstep(-0.5, 1.0, sunOrientation) * strength;
+          gl_FragColor = vec4(atmoColor, atmosphereMix);
+        }
+      `;
+      function addSurfaceAtmo(parent: THREE.Mesh, dayCol: [number,number,number], twiCol: [number,number,number], strength: number) {
+        const mat = new THREE.ShaderMaterial({
+          uniforms: {
+            dayColor: { value: new THREE.Vector3(...dayCol) },
+            twilightColor: { value: new THREE.Vector3(...twiCol) },
+            sunPos: { value: new THREE.Vector3() },
+            camPos: { value: new THREE.Vector3() },
+            strength: { value: strength },
+          },
+          vertexShader: ATMO_VERT,
+          fragmentShader: SURFACE_ATMO_FRAG,
+          side: THREE.FrontSide,
+          transparent: true,
+          depthWrite: false,
+        });
+        const gm = new THREE.Mesh(new THREE.SphereGeometry(p.r * 1.002, 48, 48), mat);
+        gm.renderOrder = 999;
+        gm.userData.isGlow = true;
+        gm.userData.glowMat = mat;
+        gm.userData.planetId = p.id;
+        parent.add(gm);
+        glowMeshes.push(gm);
+      }
+
+      // Parameters from Three.js official example + tuned per planet
+      if (p.sun) {
+        addAtmosphere(m, { scale: 1.15, dayColor: [1, .85, .3], twilightColor: [1, .4, .1],
+          fresnelLow: 0.5, fresnelPow: 2.0, sunFadeMin: -1, sunFadeMax: 1, isSun: true });
+      } else if (p.id === 'earth') {
+        addAtmosphere(m, { scale: 1.02, dayColor: [.3, .7, 1], twilightColor: [.74, .29, .04],
+          fresnelLow: 0.73, fresnelPow: 3.0, sunFadeMin: -0.5, sunFadeMax: 1.0 });
+        addSurfaceAtmo(m, [.3, .7, 1], [.74, .29, .04], 0.7);
+      } else if (p.id === 'venus') {
+        addAtmosphere(m, { scale: 1.06, dayColor: [.9, .75, .4], twilightColor: [.8, .4, .1],
+          fresnelLow: 0.65, fresnelPow: 2.5, sunFadeMin: -0.5, sunFadeMax: 1.0 });
+        addSurfaceAtmo(m, [.9, .75, .4], [.8, .4, .1], 0.6);
+      } else if (p.id === 'mars') {
+        addAtmosphere(m, { scale: 1.03, dayColor: [.8, .5, .3], twilightColor: [.6, .2, .05],
+          fresnelLow: 0.75, fresnelPow: 3.5, sunFadeMin: -0.5, sunFadeMax: 1.0 });
+        addSurfaceAtmo(m, [.8, .5, .3], [.6, .2, .05], 0.3);
+      } else if (p.id === 'jupiter') {
+        addAtmosphere(m, { scale: 1.05, dayColor: [.8, .65, .35], twilightColor: [.6, .3, .1],
+          fresnelLow: 0.7, fresnelPow: 3.0, sunFadeMin: -0.5, sunFadeMax: 1.0 });
+        addSurfaceAtmo(m, [.8, .65, .35], [.6, .3, .1], 0.5);
+      } else if (p.id === 'saturn') {
+        addAtmosphere(m, { scale: 1.05, dayColor: [.9, .8, .5], twilightColor: [.7, .4, .1],
+          fresnelLow: 0.7, fresnelPow: 3.0, sunFadeMin: -0.5, sunFadeMax: 1.0 });
+        addSurfaceAtmo(m, [.9, .8, .5], [.7, .4, .1], 0.5);
+      } else if (p.id === 'uranus') {
+        addAtmosphere(m, { scale: 1.04, dayColor: [.4, .75, .85], twilightColor: [.2, .4, .5],
+          fresnelLow: 0.72, fresnelPow: 3.0, sunFadeMin: -0.5, sunFadeMax: 1.0 });
+        addSurfaceAtmo(m, [.4, .75, .85], [.2, .4, .5], 0.5);
+      } else if (p.id === 'neptune') {
+        addAtmosphere(m, { scale: 1.04, dayColor: [.25, .4, .9], twilightColor: [.15, .1, .5],
+          fresnelLow: 0.72, fresnelPow: 3.0, sunFadeMin: -0.5, sunFadeMax: 1.0 });
+        addSurfaceAtmo(m, [.25, .4, .9], [.15, .1, .5], 0.5);
       }
 
       // Earth: atmosphere + clouds as CHILDREN — they inherit scale/position automatically.
@@ -415,6 +540,100 @@ export default function App() {
         scene.add(ol); orbitLines.push(ol);
       }
     });
+
+    // ═══ GLOW TUNING GUI ═══
+    const glowPanel = document.createElement('div');
+    glowPanel.id = 'glow-panel';
+    glowPanel.style.cssText = 'position:fixed;top:10px;left:50%;transform:translateX(-50%);z-index:9999;background:rgba(0,0,0,.85);color:#ddd;padding:10px 14px;border-radius:8px;font:11px monospace;max-height:90vh;overflow-y:auto;display:none;min-width:320px';
+    const glowTitle = document.createElement('div');
+    glowTitle.style.cssText = 'font-size:13px;font-weight:bold;margin-bottom:8px;color:#5EEAD4;cursor:pointer';
+    glowTitle.textContent = '🔆 Glow Tuner (click planet name to focus)';
+    glowPanel.appendChild(glowTitle);
+
+    // Group by planet
+    const planetIds = [...new Set(glowMeshes.map(gm => gm.userData.planetId))];
+    planetIds.forEach(pid => {
+      const meshesForPlanet = glowMeshes.filter(gm => gm.userData.planetId === pid);
+      meshesForPlanet.forEach((gm) => {
+        const mat = gm.userData.glowMat as THREE.ShaderMaterial;
+        const u = mat.uniforms;
+        const row = document.createElement('div');
+        row.style.cssText = 'margin:6px 0;border-bottom:1px solid #333;padding-bottom:6px';
+        const layerType = mat.side === THREE.BackSide ? 'rim' : 'surface';
+        const label = document.createElement('div');
+        label.style.cssText = 'color:#5EEAD4;cursor:pointer;margin-bottom:4px';
+        label.textContent = `${pid} [${layerType}]`;
+        label.onclick = () => {
+          const idx = P.findIndex(pp => pp.id === pid);
+          if (idx >= 0) focusObj(idx);
+        };
+        row.appendChild(label);
+
+        function addSlider(name: string, min: number, max: number, step: number, get: () => number, set: (v: number) => void) {
+          const wrap = document.createElement('div');
+          wrap.style.cssText = 'display:flex;align-items:center;gap:4px;margin:2px 0';
+          const lbl = document.createElement('span');
+          lbl.style.cssText = 'width:40px;text-align:right;color:#888';
+          lbl.textContent = name;
+          const sl = document.createElement('input');
+          sl.type = 'range'; sl.min = String(min); sl.max = String(max); sl.step = String(step);
+          sl.value = String(get());
+          sl.style.cssText = 'flex:1;height:14px';
+          const val = document.createElement('span');
+          val.style.cssText = 'width:40px;font-size:10px';
+          val.textContent = get().toFixed(2);
+          sl.oninput = () => { set(parseFloat(sl.value)); val.textContent = parseFloat(sl.value).toFixed(2); };
+          wrap.append(lbl, sl, val);
+          row.appendChild(wrap);
+        }
+
+        if (u.fresnelLow) addSlider('fLow', 0, 1, 0.01, () => u.fresnelLow.value, v => u.fresnelLow.value = v);
+        if (u.fresnelPow) addSlider('fPow', 0.5, 8, 0.1, () => u.fresnelPow.value, v => u.fresnelPow.value = v);
+        addSlider('scale', 1.0, 1.5, 0.01, () => gm.scale.x, v => gm.scale.setScalar(v));
+        if (u.sunFadeMin) addSlider('sFdMn', -1, 1, 0.05, () => u.sunFadeMin.value, v => u.sunFadeMin.value = v);
+        if (u.sunFadeMax) addSlider('sFdMx', -1, 1, 0.05, () => u.sunFadeMax.value, v => u.sunFadeMax.value = v);
+        if (u.strength) addSlider('str', 0, 2, 0.05, () => u.strength.value, v => u.strength.value = v);
+        addSlider('dayR', 0, 1, 0.01, () => u.dayColor.value.x, v => u.dayColor.value.x = v);
+        addSlider('dayG', 0, 1, 0.01, () => u.dayColor.value.y, v => u.dayColor.value.y = v);
+        addSlider('dayB', 0, 1, 0.01, () => u.dayColor.value.z, v => u.dayColor.value.z = v);
+        if (u.twilightColor) {
+          addSlider('twiR', 0, 1, 0.01, () => u.twilightColor.value.x, v => u.twilightColor.value.x = v);
+          addSlider('twiG', 0, 1, 0.01, () => u.twilightColor.value.y, v => u.twilightColor.value.y = v);
+          addSlider('twiB', 0, 1, 0.01, () => u.twilightColor.value.z, v => u.twilightColor.value.z = v);
+        }
+        glowPanel.appendChild(row);
+      });
+    });
+
+    // Export button
+    const exportBtn = document.createElement('button');
+    exportBtn.textContent = '📋 Export values';
+    exportBtn.style.cssText = 'margin-top:8px;padding:4px 10px;background:#333;color:#5EEAD4;border:1px solid #555;border-radius:4px;cursor:pointer;font:11px monospace';
+    exportBtn.onclick = () => {
+      const out: Record<string, any[]> = {};
+      glowMeshes.forEach(gm => {
+        const mat = gm.userData.glowMat as THREE.ShaderMaterial;
+        const u = mat.uniforms;
+        const pid = gm.userData.planetId;
+        if (!out[pid]) out[pid] = [];
+        const entry: any = { type: mat.side === THREE.BackSide ? 'rim' : 'surface', scale: +gm.scale.x.toFixed(3) };
+        if (u.fresnelLow) entry.fresnelLow = +u.fresnelLow.value.toFixed(2);
+        if (u.fresnelPow) entry.fresnelPow = +u.fresnelPow.value.toFixed(1);
+        if (u.sunFadeMin) entry.sunFadeMin = +u.sunFadeMin.value.toFixed(2);
+        if (u.sunFadeMax) entry.sunFadeMax = +u.sunFadeMax.value.toFixed(2);
+        if (u.strength) entry.strength = +u.strength.value.toFixed(2);
+        entry.dayColor = [+u.dayColor.value.x.toFixed(2), +u.dayColor.value.y.toFixed(2), +u.dayColor.value.z.toFixed(2)];
+        if (u.twilightColor) entry.twilightColor = [+u.twilightColor.value.x.toFixed(2), +u.twilightColor.value.y.toFixed(2), +u.twilightColor.value.z.toFixed(2)];
+        out[pid].push(entry);
+      });
+      console.log('GLOW CONFIG:', JSON.stringify(out, null, 2));
+      navigator.clipboard?.writeText(JSON.stringify(out, null, 2));
+    };
+    glowPanel.appendChild(exportBtn);
+    document.body.appendChild(glowPanel);
+
+    // Toggle with G key
+    window.addEventListener('keydown', e => { if (e.key === 'g' || e.key === 'G') glowPanel.style.display = glowPanel.style.display === 'none' ? 'block' : 'none'; });
 
     // ═══════ NATURAL MOONS (all except Earth's Moon) ═══════
     const naturalMoonMeshes: THREE.Mesh[] = [];
@@ -1682,7 +1901,7 @@ export default function App() {
       {
         const camPos = cam.position;
         meshes.forEach((m, idx) => {
-          if (!m.visible || P[idx].sun) return;
+          if (!m.visible) return;
           // Skip Earth collision when following a satellite (camera needs to be near surface)
           if (focSatIdx >= 0 && P[idx].id === 'earth') return;
           const camToObj = camPos.distanceTo(m.position);
@@ -1697,6 +1916,15 @@ export default function App() {
       }
       cam.position.set(cT.x + cD * Math.sin(cA.p) * Math.cos(cA.t), cT.y + cD * Math.cos(cA.p), cT.z + cD * Math.sin(cA.p) * Math.sin(cA.t));
       cam.lookAt(cT);
+
+      // Update atmosphere uniforms
+      const glowSunPos = meshes[0].position;
+      glowMeshes.forEach(gm => {
+        const mat = gm.userData.glowMat as THREE.ShaderMaterial;
+        mat.uniforms.sunPos.value.copy(glowSunPos);
+        mat.uniforms.camPos.value.copy(cam.position);
+      });
+
       // Dynamic near/far plane — prevents clipping when zoomed very close
       cam.near = Math.max(cD * 0.001, focSatIdx >= 0 ? 0.00001 : 0.0001);
       cam.far = Math.max(cD * 100, 2000);
@@ -1853,6 +2081,8 @@ export default function App() {
       {/* Satellite List Panel */}
       {satListOpen && (
         <div className="sat-panel" id="__satPanel">
+          <div style={{ position: 'absolute', top: 6, right: 8, zIndex: 10, cursor: 'pointer', fontSize: 14, color: '#888', lineHeight: 1 }}
+            onClick={() => setSatListOpen(false)}>✕</div>
           <div className="sat-panel-drag" onPointerDown={(e) => {
             e.preventDefault();
             const el = document.getElementById('__satPanel')!;
@@ -1938,9 +2168,9 @@ export default function App() {
                     {groupSats.length > 0 ? groupSats.map((s) => {
                       const realIdx = satellites.indexOf(s);
                       return (
-                        <div key={realIdx} className="sat-item" onClick={() => (window as any).__focusSat(realIdx)}>
+                        <div key={realIdx} className="sat-item" title="" onClick={() => (window as any).__focusSat(realIdx)}>
                           <span className="sat-dot" style={{ background: s.color }} />
-                          <span className="sat-name">{getSatDisplayName(s.name, s.noradId)}</span>
+                          <span className="sat-name" title="">{getSatDisplayName(s.name, s.noradId)}</span>
                         </div>
                       );
                     }) : (g.id === 'starlink' && !starlinkLoading ? <div className="sat-loading" style={{ fontSize: 10 }}>启用后加载6000+颗卫星</div> : <div className="sat-loading">加载中...</div>)}

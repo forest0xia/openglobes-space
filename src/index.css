@@ -12,7 +12,7 @@
   --warm-dim:rgba(251,191,36,0.1);
   --rose:#FB7185;
   --text:#D4D9E3;
-  --text-dim:#5B6478;
+  --text-dim:#e0e0e0;
   --text-bright:#F1F5F9;
   --glass:rgba(8,12,26,0.72);
   --glass-edge:rgba(94,234,212,0.08);
@@ -296,7 +296,7 @@ canvas{display:block;position:fixed;inset:0;z-index:1}
 
 /* ═══════ SCENE LABELS ═══════ */
 .scene-label{
-  position:fixed;z-index:50;pointer-events:none;
+  position:fixed;z-index:200;pointer-events:none;
   font-family:var(--font-cn);font-size:10px;font-weight:400;
   color:rgba(212,217,227,.7);text-align:left;
   white-space:nowrap;
