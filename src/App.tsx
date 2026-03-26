@@ -123,6 +123,7 @@ export default function App() {
     ren.setSize(innerWidth, innerHeight); ren.setPixelRatio(Math.min(devicePixelRatio, 2));
     ren.toneMapping = THREE.ACESFilmicToneMapping; ren.toneMappingExposure = 1.4;
     canvasRef.current!.appendChild(ren.domElement);
+    ren.domElement.style.touchAction = 'none'; // prevent browser gestures on canvas
     cam.position.set(0, 55, 75); cam.lookAt(0, 0, 0);
     // Ambient — lights the night/shadow side so it's visible but darker
     scene.add(new THREE.AmbientLight(0x405060, .6));
@@ -1079,12 +1080,15 @@ export default function App() {
     let cA = { t: 0.3, p: Math.PI / 3 }, cD = 105, cT = new THREE.Vector3();
     let tA = { t: 0.3, p: Math.PI / 3 }, tD = 105, tT = new THREE.Vector3();
 
-    ren.domElement.addEventListener('pointerdown', e => { drag = true; dragMoved = false; pM = { x: e.clientX, y: e.clientY }; document.body.style.cursor = 'grabbing'; });
+    let isTouch = false;
+    ren.domElement.addEventListener('pointerdown', e => { drag = true; dragMoved = false; isTouch = e.pointerType === 'touch'; pM = { x: e.clientX, y: e.clientY }; document.body.style.cursor = 'grabbing'; });
     ren.domElement.addEventListener('pointermove', e => {
       if (drag) {
         const dx = e.clientX - pM.x, dy = e.clientY - pM.y;
         if (Math.abs(dx) > 2 || Math.abs(dy) > 2) dragMoved = true;
-        tA.t -= dx * .004; tA.p = Math.max(.1, Math.min(Math.PI - .1, tA.p - dy * .004));
+        // Mobile touch: reverse horizontal to feel like globe dragging
+        const hDir = isTouch ? 1 : -1;
+        tA.t += hDir * dx * .004; tA.p = Math.max(.1, Math.min(Math.PI - .1, tA.p - dy * .004));
         pM = { x: e.clientX, y: e.clientY };
       }
       hoverFn(e);
@@ -1325,6 +1329,7 @@ export default function App() {
     // 1 = real-time, 86400 = 1 day/s, 2592000 = 1 month/s, etc.
     const SPEED_PRESETS = [
       { v: 1, label: '1秒' },
+      { v: 15, label: '15秒' },
       { v: 30, label: '30秒' },
       { v: 60, label: '1分' },
       { v: 300, label: '5分' },
