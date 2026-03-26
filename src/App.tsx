@@ -1146,8 +1146,7 @@ export default function App() {
         const y = (bracketVec.y * -.5 + .5) * innerHeight;
 
         // Check if satellite is too small on screen to see
-        const satScreenSize = getScreenSize(sm, camera, satSize || 0.003);
-        if (satScreenSize > 4) { el.style.display = 'none'; continue; } // visible enough, no bracket needed
+        // Brackets always shown when satellite is visible (no hide-on-zoom-in)
 
         el.style.display = 'block';
         el.style.left = (x - 6) + 'px';
