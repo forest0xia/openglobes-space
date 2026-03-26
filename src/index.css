@@ -85,13 +85,30 @@ canvas{display:block;position:fixed;inset:0;z-index:1}
 }
 .nav-planet:hover{border-color:var(--glass-edge);transform:scale(1.12)}
 .nav-planet.active{border-color:var(--glow)}
-.nav-moons{display:flex;flex-direction:row;align-items:center;gap:3px;padding-left:14px;height:20px}
-.nav-moon-dot{
-  width:12px;height:12px;border-radius:50%;cursor:pointer;
-  transition:all .2s;flex-shrink:0;
-  box-shadow:0 0 4px rgba(255,255,255,0.2);
+.nav-moons{
+  display:flex;flex-direction:row;align-items:center;gap:4px;
+  margin-left:18px;padding:3px 8px;position:relative;
+  background:rgba(94,234,212,0.04);border:1px solid rgba(94,234,212,0.08);border-radius:10px;
 }
-.nav-moon-dot:hover{transform:scale(1.8);box-shadow:0 0 8px currentColor}
+/* Chevron connector pointing up to parent planet */
+.nav-moons::before{
+  content:'';position:absolute;top:-6px;left:12px;
+  width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;
+  border-bottom:5px solid rgba(94,234,212,0.12);
+}
+.nav-moon-dot{
+  width:10px;height:10px;border-radius:50%;cursor:pointer;
+  transition:all .2s;flex-shrink:0;
+  box-shadow:0 0 3px rgba(255,255,255,0.15);position:relative;
+}
+.nav-moon-dot:hover{transform:scale(1.5);box-shadow:0 0 8px currentColor}
+/* Tooltip on hover */
+.nav-moon-dot[title]:hover::after{
+  content:attr(title);position:absolute;left:16px;top:-2px;
+  font-size:9px;color:var(--text);white-space:nowrap;pointer-events:none;
+  background:var(--glass);border:1px solid var(--glass-edge);border-radius:4px;
+  padding:2px 6px;backdrop-filter:blur(8px);z-index:10;
+}
 .nav-moon-more{
   font-size:8px;color:var(--text-dim);cursor:default;white-space:nowrap;
   font-family:var(--font-cn);padding:0 2px;line-height:1;opacity:0.6;
@@ -230,7 +247,7 @@ canvas{display:block;position:fixed;inset:0;z-index:1}
 }
 .sat-tab:hover{color:var(--text);background:rgba(255,255,255,.03)}
 .sat-tab.active{color:var(--glow);background:var(--glow-dim)}
-.sat-tab-count{font-size:8px;color:var(--text-dim);display:block;text-align:center;width:100%}
+.sat-tab-count{font-size:8px;color:var(--text-dim);display:block;padding-left:7px}
 .sat-tab-row{display:flex;align-items:center;gap:3px;white-space:nowrap}
 .sat-tab-dot{width:4px;height:4px;border-radius:50%;flex-shrink:0}
 .sat-content{flex:1;padding-left:10px;overflow-y:auto;min-width:0}

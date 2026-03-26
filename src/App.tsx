@@ -1286,9 +1286,24 @@ export default function App() {
           const eci = getSatPositionECI(sat, now);
           if (!eci) { sm.visible = false; if (satTrailLines[i]) satTrailLines[i].visible = false; continue; }
           const pos = eciToScene(eci, ep, earthSceneR, sc);
-          // Sanity: if position is at origin (inside Sun) or too far, hide
-          const distFromEarth = Math.sqrt((pos.x - ep.x) ** 2 + (pos.y - ep.y) ** 2 + (pos.z - ep.z) ** 2);
+          // Sanity: if position is at origin or too far, hide
+          const dxE = pos.x - ep.x, dyE = pos.y - ep.y, dzE = pos.z - ep.z;
+          const distFromEarth = Math.sqrt(dxE * dxE + dyE * dyE + dzE * dzE);
           if (distFromEarth < 0.001 || distFromEarth > 200 * sc) { sm.visible = false; continue; }
+
+          // Occlusion: hide satellite if it's behind Earth relative to camera
+          const earthR = earthSceneR * sc;
+          const cp = cam.position;
+          const camToEarth = new THREE.Vector3(ep.x - cp.x, ep.y - cp.y, ep.z - cp.z);
+          const camToSat = new THREE.Vector3(pos.x - cp.x, pos.y - cp.y, pos.z - cp.z);
+          const camEarthDist = camToEarth.length();
+          if (camEarthDist > earthR * 1.5) { // only check when not too close to Earth
+            const dot = camToEarth.dot(camToSat) / (camEarthDist * camToSat.length());
+            if (dot > 0.98 && camToSat.length() > camEarthDist) {
+              // Satellite is roughly behind Earth from camera's perspective
+              sm.visible = false; continue;
+            }
+          }
           sm.visible = true;
 
           // Jitter — larger for stations (LEO objects cluster), smaller for MEO/GEO
