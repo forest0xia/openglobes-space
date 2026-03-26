@@ -698,26 +698,20 @@ export default function App() {
       focIdx = -1;
       focSatIdx = idx;
       tT.copy(sm.position);
-      // Camera distance: satellite fills ~1/20 screen width
-      // Use bounding sphere to get ACTUAL world radius (not scale factor)
-      const bbox = new THREE.Box3().setFromObject(sm);
-      const bsphere = new THREE.Sphere();
-      bbox.getBoundingSphere(bsphere);
-      const satWorldR = bsphere.radius || sm.scale.x * 0.015; // fallback: model radius ~0.015
-      tD = satWorldR * 20 / ((innerWidth / innerHeight) * Math.tan(25 * Math.PI / 180));
-      // Camera behind satellite, looking toward Earth
-      const eIdx2 = P.findIndex(pp => pp.id === 'earth');
-      if (eIdx2 >= 0) {
-        const satToEarth = new THREE.Vector3().subVectors(meshes[eIdx2].position, sm.position);
-        if (satToEarth.length() > 0.01) {
-          const dir = satToEarth.normalize();
-          tA.t = Math.atan2(dir.x, dir.z) + Math.PI;
-          tA.p = Math.acos(Math.max(-0.99, Math.min(0.99, dir.y))) * 0.7 + 0.3;
+      // Zoom to show satellite near Earth — use Earth visual radius as reference
+      const eIdxZ = P.findIndex(pp => pp.id === 'earth');
+      const earthVisR = baseScale(eIdxZ) * earthSceneR;
+      tD = earthVisR * 0.5; // half Earth radius — close orbit view
+      // Camera on the far side from Earth (behind satellite, looking down at Earth)
+      // dir = satellite→Earth direction. Camera placed along this direction (above satellite)
+      if (eIdxZ >= 0) {
+        const earthToSat = new THREE.Vector3().subVectors(sm.position, meshes[eIdxZ].position);
+        if (earthToSat.length() > 0.01) {
+          const dir = earthToSat.normalize();
+          tA.t = Math.atan2(dir.x, dir.z);
+          tA.p = Math.acos(Math.max(-0.99, Math.min(0.99, dir.y)));
         }
       }
-      // Snap camera
-      cD = tD; cT.copy(sm.position); cA.t = tA.t; cA.p = tA.p;
-      console.log('[focusSat]', { idx, bsphereR: bsphere.radius, satWorldR, tD, floatSteps: tD / (20 * Math.pow(2, -23)) });
       const dn = getSatDisplayName(sat.name, sat.noradId);
       iNameRef.current!.textContent = dn;
       iNameRef.current!.style.color = sat.color;
@@ -802,7 +796,7 @@ export default function App() {
         if (type === 'sat') {
           // Satellites: label directly on top of the satellite dot
           el.style.left = x + 'px';
-          el.style.top = (y - 50) + 'px'; // 50px above the satellite
+          el.style.top = (y - 30) + 'px'; // 30px above the satellite
           el.style.transform = 'translateX(-50%)';
           el.style.textAlign = 'center';
           el.style.fontSize = '8px';
@@ -874,17 +868,46 @@ export default function App() {
     });
     ren.domElement.addEventListener('pointerup', () => { drag = false; document.body.style.cursor = 'grab'; });
     ren.domElement.addEventListener('pointerleave', () => { drag = false; });
+
+    // Zoom helper — shared by wheel and pinch
+    function applyZoom(delta: number) {
+      const zoomPct = tD < 10 ? 0.0003 : tD < 800 ? 0.0004 : tD < 30000 ? 0.00015 : 0.00008;
+      const zoomMin = focSatIdx >= 0 ? 0.0001 : 0.01;
+      tD = Math.max(zoomMin, Math.min(500000, tD * (1 + delta * zoomPct)));
+    }
+
     ren.domElement.addEventListener('wheel', e => {
       e.preventDefault();
-      // Zoom speed: proportional to distance, very gentle
-      // e.deltaY is ~100 per scroll notch. We want ~5% distance change per notch.
-      // Zoom tiers: close planets → solar system → galaxy transition → deep space
-      const zoomPct = tD < 10 ? 0.0003 : tD < 800 ? 0.0004 : tD < 30000 ? 0.00015 : 0.00008;
-      const zoomMin = focSatIdx >= 0 ? 0.0000001 : 0.01;
-      tD = Math.max(zoomMin, Math.min(500000, tD * (1 + e.deltaY * zoomPct)));
-      // Auto-cancel satellite follow when zoomed out far
-      if (focSatIdx >= 0 && tD > 1) focSatIdx = -1;
+      applyZoom(e.deltaY);
     }, { passive: false });
+
+    // Touch: pinch-to-zoom + prevent browser zoom
+    let lastPinchDist = 0;
+    ren.domElement.addEventListener('touchstart', e => {
+      if (e.touches.length === 2) {
+        e.preventDefault();
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        lastPinchDist = Math.sqrt(dx * dx + dy * dy);
+      }
+    }, { passive: false });
+    ren.domElement.addEventListener('touchmove', e => {
+      if (e.touches.length === 2) {
+        e.preventDefault();
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (lastPinchDist > 0) {
+          const pinchDelta = (lastPinchDist - dist) * 3; // positive = zoom out
+          applyZoom(pinchDelta);
+        }
+        lastPinchDist = dist;
+      }
+    }, { passive: false });
+    ren.domElement.addEventListener('touchend', () => { lastPinchDist = 0; });
+    // Prevent browser zoom on the whole document (iOS Safari double-tap, pinch)
+    document.addEventListener('gesturestart', e => e.preventDefault(), { passive: false } as any);
+    document.addEventListener('gesturechange', e => e.preventDefault(), { passive: false } as any);
 
     // Click — only if not dragged
     ren.domElement.addEventListener('click', e => {
@@ -1476,8 +1499,6 @@ export default function App() {
         for (let i = 0; i < sd.sats.length; i++) {
           const sm = sd.meshes[i];
           if (!sm) continue;
-          // Skip focused satellite — handled by focus follow block
-          if (i === focSatIdx) continue;
           const sat = sd.sats[i];
           const groupOn = sd.groups[sat?.groupId] ?? false;
           if (!groupOn || hideAllSats) {
@@ -1609,43 +1630,29 @@ export default function App() {
       }
 
       if (focIdx >= 0) tT.copy(meshes[focIdx].position);
-      // Follow focused satellite
+      // Follow focused satellite — track its position
       if (focSatIdx >= 0) {
         const fsm = satDataRef.current.meshes[focSatIdx];
-        const fsat = satDataRef.current.sats[focSatIdx];
-        if (fsm && fsat) {
-          const fNow = new Date(simStartMs + t * 1000);
-          const fEci = getSatPositionECI(fsat, fNow);
-          if (fEci) {
-            const feIdx = P.findIndex(pp => pp.id === 'earth');
-            const fep = meshes[feIdx].position;
-            const fsc = baseScale(feIdx);
-            const fpos = eciToScene(fEci, fep, earthSceneR, fsc);
-            fsm.position.set(fpos.x, fpos.y, fpos.z);
-          }
-          fsm.visible = true;
-          tT.copy(fsm.position);
-          cT.copy(fsm.position); // snap every frame — no lerp drift for origin shift precision
-          if (frameCount % 120 === 0) {
-            console.log('[satFollow]', {
-              cD, tD, scale: fsm.scale.x,
-              satPos: fsm.position.toArray().map((v: number) => +v.toFixed(6)),
-              camPos: cam.position.toArray().map((v: number) => +v.toFixed(6)),
-              cT: cT.toArray().map((v: number) => +v.toFixed(6)),
-              near: cam.near, far: cam.far,
-            });
-          }
-        }
+        if (fsm && fsm.visible) tT.copy(fsm.position);
       }
 
       const lf = 1 - Math.pow(.008, dt);
       cA.t += (tA.t - cA.t) * lf; cA.p += (tA.p - cA.p) * lf;
-      cD += (tD - cD) * lf; cT.lerp(tT, lf);
+      if (focSatIdx >= 0) {
+        // Locked on satellite: snap everything instantly — zero delay
+        cD = tD;
+        cT.copy(tT);
+      } else {
+        cD += (tD - cD) * lf;
+        cT.lerp(tT, lf);
+      }
       // Prevent camera from entering any planet's interior
       {
         const camPos = cam.position;
         meshes.forEach((m, idx) => {
           if (!m.visible || P[idx].sun) return;
+          // Skip Earth collision when following a satellite (camera needs to be near surface)
+          if (focSatIdx >= 0 && P[idx].id === 'earth') return;
           const camToObj = camPos.distanceTo(m.position);
           const r = baseScale(idx) * P[idx].r * 1.1;
           if (camToObj < r && r > 0.001) {
@@ -1659,7 +1666,7 @@ export default function App() {
       cam.position.set(cT.x + cD * Math.sin(cA.p) * Math.cos(cA.t), cT.y + cD * Math.cos(cA.p), cT.z + cD * Math.sin(cA.p) * Math.sin(cA.t));
       cam.lookAt(cT);
       // Dynamic near/far plane — prevents clipping when zoomed very close
-      cam.near = Math.max(cD * 0.001, 0.0001);
+      cam.near = Math.max(cD * 0.001, focSatIdx >= 0 ? 0.00001 : 0.0001);
       cam.far = Math.max(cD * 100, 2000);
       cam.updateProjectionMatrix();
 
@@ -1714,26 +1721,7 @@ export default function App() {
         dsMat.opacity = 0;
       }
 
-      // Origin shift for satellite focus — simple version
-      if (focSatIdx >= 0 && satDataRef.current.meshes[focSatIdx]) {
-        const shift = cT.clone();
-        const savedPos = cam.position.clone();
-        const savedNear = cam.near, savedFar = cam.far;
-        scene.position.set(-shift.x, -shift.y, -shift.z);
-        cam.position.sub(shift);
-        cam.lookAt(0, 0, 0); // satellite is at origin after shift
-        cam.near = Math.max(cD * 0.01, 0.0000001);
-        cam.far = Math.max(cD * 100, 2000);
-        cam.updateProjectionMatrix();
-        scene.updateMatrixWorld(true);
-        ren.render(scene, cam);
-        scene.position.set(0, 0, 0);
-        cam.position.copy(savedPos);
-        cam.near = savedNear; cam.far = savedFar;
-        cam.updateProjectionMatrix();
-      } else {
-        ren.render(scene, cam);
-      }
+      ren.render(scene, cam);
       updateLabels();
       updateHelpers();
     }
