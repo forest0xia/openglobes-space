@@ -600,14 +600,34 @@ export default function App() {
           color: 0x8B5CF6, size: 1.5, sizeAttenuation: false, transparent: true, opacity: 0.9
         }));
         slPoints.frustumCulled = false;
+        slPoints.visible = false; // hidden until all positions computed
         scene.add(slPoints);
 
-        // Store Starlink data for position updates in anim loop
+        // Compute ALL initial positions before showing (prevents blinking)
+        setStarlinkProgress(70);
+        const initNow = new Date();
+        const eIdxSL = P.findIndex(pp => pp.id === 'earth');
+        const epSL = meshes[eIdxSL].position;
+        const scSL = baseScale(eIdxSL);
+        for (let si = 0; si < slCount; si++) {
+          const slEci = getSatPositionECI(newSats[si], initNow);
+          if (slEci) {
+            const slP = eciToScene(slEci, epSL, earthSceneR, scSL);
+            slPositions[si * 3] = slP.x;
+            slPositions[si * 3 + 1] = slP.y;
+            slPositions[si * 3 + 2] = slP.z;
+          }
+          if (si % 1000 === 0) {
+            setStarlinkProgress(70 + Math.round((si / slCount) * 30));
+            await new Promise(r => setTimeout(r, 0)); // yield to UI
+          }
+        }
+        slPoints.visible = true; // now show — all positions are valid
+
         satDataRef.current.starlinkPoints = slPoints;
         satDataRef.current.starlinkSats = newSats;
         satDataRef.current.starlinkPositions = slPositions;
 
-        // Add first 20 to the satellite list for panel display
         const listSats = newSats.slice(0, 20);
         setSatellites(prev => [...prev, ...listSats.map(s => ({ ...s, groupId: 'starlink' }))]);
         satCountRef.current!.textContent = `${satDataRef.current.sats.length + slCount} 颗卫星追踪中`;
