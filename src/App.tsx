@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { PLANETS } from './data/planets';
 import { NATURAL_MOONS, MOON_COUNTS } from './data/moons';
 import { PROBES } from './data/probesMeta';
-import { fetchAllSatellites, getSatPositionECI, eciToScene, SAT_GROUPS, type SatRecord } from './services/celestrak';
+import { fetchAllSatellites, fetchSatelliteGroup, getSatPositionECI, eciToScene, SAT_GROUPS, type SatRecord } from './services/celestrak';
 import { createSatelliteModel } from './utils/satModel';
 import { createProbeModel } from './utils/probeModels';
 import { createTrailMaterial, createTrailIndexAttribute } from './utils/trailShader';
@@ -91,7 +91,9 @@ export default function App() {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [mobileSettingsOpen, setMobileSettingsOpen] = useState(false);
   const [toast, setToast] = useState<{ title: string; text: string } | null>(null);
-  const [satTab, setSatTab] = useState('probes'); // 'probes' | group id
+  const [satTab, setSatTab] = useState('beidou');
+  const [starlinkLoading, setStarlinkLoading] = useState(false);
+  const [starlinkProgress, setStarlinkProgress] = useState(0);
   const [satellites, setSatellites] = useState<SatRecord[]>([]);
   const [satGroups, setSatGroups] = useState<Record<string, boolean>>({ beidou: true, stations: true, gps: false, starlink: false, visual: false });
 
@@ -550,10 +552,49 @@ export default function App() {
     });
 
     // Toggle satellite group visibility
-    (window as any).__toggleSatGroup = (gid: string) => {
+    (window as any).__toggleSatGroup = async (gid: string) => {
       const g = satDataRef.current.groups;
       g[gid] = !g[gid];
       setSatGroups({ ...g });
+
+      // On-demand load for Starlink: fetch all 6000+ when first enabled
+      if (gid === 'starlink' && g[gid] && satDataRef.current.sats.filter(s => s.groupId === 'starlink').length === 0) {
+        setStarlinkLoading(true);
+        setStarlinkProgress(0);
+        const newSats = await fetchSatelliteGroup('starlink');
+        setStarlinkProgress(50);
+        // Create simple purple spheres for each Starlink sat
+        const sd = satDataRef.current;
+        const batchSize = 200;
+        for (let b = 0; b < newSats.length; b += batchSize) {
+          const batch = newSats.slice(b, b + batchSize);
+          batch.forEach(sat => {
+            const sm = new THREE.Mesh(
+              new THREE.SphereGeometry(0.003, 4, 4),
+              new THREE.MeshBasicMaterial({ color: 0x8B5CF6 })
+            ) as any as THREE.Mesh;
+            const dn = sat.name;
+            sm.userData = { isSat: true, name: sat.name, displayName: dn, groupId: 'starlink', color: '#8B5CF6', satIdx: sd.meshes.length };
+            sm.visible = false; // invisible until first valid position
+            scene.add(sm);
+            sd.meshes.push(sm);
+            sd.sats.push(sat);
+            // No trail for Starlink (too many)
+            satTrails.push(new Float32Array(TRAIL_LEN * 3));
+            satTrailIdx.push(0);
+            satTrailReady.push(false);
+            satTrailLines.push(null as any);
+          });
+          setStarlinkProgress(50 + Math.round((b / newSats.length) * 50));
+          // Yield to UI
+          await new Promise(r => setTimeout(r, 0));
+        }
+        setSatellites(prev => [...prev, ...newSats]);
+        satCountRef.current!.textContent = `${sd.sats.length} 颗卫星追踪中`;
+        setStarlinkLoading(false);
+        return;
+      }
+
       satDataRef.current.meshes.forEach((sm, i) => {
         const sat = satDataRef.current.sats[i];
         if (sat && sat.groupId === gid) {
@@ -963,7 +1004,8 @@ export default function App() {
     };
     updSpd();
     (window as any).__resetCam = () => { tA = { t: 0.3, p: Math.PI / 3 }; tD = 105; tT.set(0, 0, 0); (window as any).__closeInfo(); };
-    const layers = { sat: true, probe: true }; // probes visible by default
+    const layers = { sat: true, probe: false }; // probes hidden by default
+    probeMeshes.forEach(m => m.visible = false);
     (window as any).__toggleL = (k: string) => {
       (layers as any)[k] = !(layers as any)[k];
       if (k === 'probe') probeMeshes.forEach(m => m.visible = layers.probe);
@@ -1192,8 +1234,11 @@ export default function App() {
           // Compute position at current simulated time
           const eci = getSatPositionECI(sat, now);
           if (!eci) { sm.visible = false; if (satTrailLines[i]) satTrailLines[i].visible = false; continue; }
-          sm.visible = true;
           const pos = eciToScene(eci, ep, earthSceneR, sc);
+          // Sanity: if position is at origin (inside Sun) or too far, hide
+          const distFromEarth = Math.sqrt((pos.x - ep.x) ** 2 + (pos.y - ep.y) ** 2 + (pos.z - ep.z) ** 2);
+          if (distFromEarth < 0.001 || distFromEarth > 200 * sc) { sm.visible = false; continue; }
+          sm.visible = true;
 
           // Jitter — larger for stations (LEO objects cluster), smaller for MEO/GEO
           const isStation = sat.groupId === 'stations';
@@ -1460,12 +1505,21 @@ export default function App() {
           {/* Vertical sidebar tabs + content */}
           <div className="sat-layout">
             <div className="sat-sidebar">
-              <button className={`sat-tab ${satTab === 'probes' ? 'active' : ''}`} onClick={() => setSatTab('probes')}>探测器<span className="sat-tab-count">{PROBES.length}</span></button>
-              {SAT_GROUPS.map(g => (
-                <button key={g.id} className={`sat-tab ${satTab === g.id ? 'active' : ''}`} onClick={() => setSatTab(g.id)}>
-                  <span className="sat-tab-dot" style={{ background: g.color }} />{g.labelCn}<span className="sat-tab-count">{satellites.filter(s => s.groupId === g.id).length}</span>
-                </button>
-              ))}
+              {/* Custom order: 北斗, 探测器, 空间站, Starlink, GPS, 明亮卫星 */}
+              {['beidou', 'probes', 'stations', 'starlink', 'gps', 'visual'].map(tid => {
+                if (tid === 'probes') return (
+                  <button key="probes" className={`sat-tab ${satTab === 'probes' ? 'active' : ''}`} onClick={() => setSatTab('probes')}>
+                    探测器<span className="sat-tab-count">{PROBES.length}</span>
+                  </button>
+                );
+                const g = SAT_GROUPS.find(gg => gg.id === tid);
+                if (!g) return null;
+                return (
+                  <button key={g.id} className={`sat-tab ${satTab === g.id ? 'active' : ''}`} onClick={() => setSatTab(g.id)}>
+                    <span className="sat-tab-dot" style={{ background: g.color }} />{g.labelCn}<span className="sat-tab-count">{satellites.filter(s => s.groupId === g.id).length}</span>
+                  </button>
+                );
+              })}
             </div>
             <div className="sat-content">
               {satTab === 'probes' ? (<>
@@ -1489,7 +1543,7 @@ export default function App() {
                   beidou: '中国北斗导航系统。MEO/GEO轨道，高度21,500-35,786km。',
                   stations: 'ISS、中国空间站等载人航天器。LEO约400km。',
                   gps: '美国GPS导航系统。MEO约20,200km，31颗在轨。',
-                  starlink: 'SpaceX星链。LEO约550km，在轨6000+颗（展示前20）。',
+                  starlink: 'SpaceX星链互联网卫星。LEO约550km，在轨6000+颗。首次启用时加载全部数据。',
                   visual: '地面肉眼可见的明亮卫星。多在LEO 200-2000km。',
                 };
                 const refs: Record<string, string> = {
@@ -1507,6 +1561,15 @@ export default function App() {
                     <input type="checkbox" checked={satGroups[g.id] ?? false} onChange={() => (window as any).__toggleSatGroup(g.id)} />
                     <span>显示</span>
                   </label>
+                  {/* Starlink progress bar */}
+                  {g.id === 'starlink' && starlinkLoading && (
+                    <div style={{ marginBottom: 8 }}>
+                      <div style={{ fontSize: 10, color: 'var(--text-dim)', marginBottom: 4 }}>加载 Starlink 卫星数据... {starlinkProgress}%</div>
+                      <div style={{ width: '100%', height: 3, background: 'rgba(94,234,212,0.1)', borderRadius: 2 }}>
+                        <div style={{ width: `${starlinkProgress}%`, height: '100%', background: '#8B5CF6', borderRadius: 2, transition: 'width .3s' }} />
+                      </div>
+                    </div>
+                  )}
                   <div className="sat-list">
                     {groupSats.length > 0 ? groupSats.map((s) => {
                       const realIdx = satellites.indexOf(s);
@@ -1516,7 +1579,7 @@ export default function App() {
                           <span className="sat-name">{getSatDisplayName(s.name, s.noradId)}</span>
                         </div>
                       );
-                    }) : <div className="sat-loading">加载中...</div>}
+                    }) : (g.id === 'starlink' && !starlinkLoading ? <div className="sat-loading" style={{ fontSize: 10 }}>启用后加载6000+颗卫星</div> : <div className="sat-loading">加载中...</div>)}
                   </div>
                 </>);
               })()}

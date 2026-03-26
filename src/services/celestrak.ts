@@ -22,7 +22,7 @@ export const SAT_GROUPS: SatGroup[] = [
   { id: 'beidou', label: 'BeiDou', labelCn: '北斗', color: '#7EC8E3', url: 'https://celestrak.org/NORAD/elements/gp.php?GROUP=beidou&FORMAT=json' },
   { id: 'stations', label: 'Stations', labelCn: '空间站', color: '#F59E0B', url: 'https://celestrak.org/NORAD/elements/gp.php?GROUP=stations&FORMAT=json' },
   { id: 'gps', label: 'GPS', labelCn: 'GPS', color: '#3B82F6', url: 'https://celestrak.org/NORAD/elements/gp.php?GROUP=gps-ops&FORMAT=json' },
-  { id: 'starlink', label: 'Starlink', labelCn: 'Starlink', color: '#8B5CF6', url: 'https://celestrak.org/NORAD/elements/gp.php?GROUP=starlink&FORMAT=json', maxCount: 20 },
+  { id: 'starlink', label: 'Starlink', labelCn: 'Starlink', color: '#8B5CF6', url: 'https://celestrak.org/NORAD/elements/gp.php?GROUP=starlink&FORMAT=json' },
   { id: 'visual', label: 'Brightest', labelCn: '明亮卫星', color: '#10B981', url: 'https://celestrak.org/NORAD/elements/gp.php?GROUP=visual&FORMAT=json' },
 ];
 
@@ -176,9 +176,16 @@ async function fetchGroup(group: SatGroup): Promise<SatRecord[]> {
   }
 }
 
-export async function fetchAllSatellites(): Promise<SatRecord[]> {
-  const results = await Promise.all(SAT_GROUPS.map(fetchGroup));
+export async function fetchAllSatellites(skipGroups: string[] = ['starlink']): Promise<SatRecord[]> {
+  const groups = SAT_GROUPS.filter(g => !skipGroups.includes(g.id));
+  const results = await Promise.all(groups.map(fetchGroup));
   return results.flat();
+}
+
+export async function fetchSatelliteGroup(groupId: string): Promise<SatRecord[]> {
+  const group = SAT_GROUPS.find(g => g.id === groupId);
+  if (!group) return [];
+  return fetchGroup(group);
 }
 
 export function getSatPositionECI(sat: SatRecord, date: Date): { x: number; y: number; z: number } | null {
