@@ -94,11 +94,16 @@ export default function App() {
   const [satTab, setSatTab] = useState('beidou');
   const [starlinkLoading, setStarlinkLoading] = useState(false);
   const [starlinkProgress, setStarlinkProgress] = useState(0);
+  const [probesVisible, setProbesVisible] = useState(false);
   const [satellites, setSatellites] = useState<SatRecord[]>([]);
   const [satGroups, setSatGroups] = useState<Record<string, boolean>>({ beidou: true, stations: true, gps: false, starlink: false, visual: false });
 
   // Store refs accessible from inside useEffect
-  const satDataRef = useRef<{ sats: SatRecord[]; meshes: THREE.Mesh[]; groups: Record<string, boolean>; orbitLines: THREE.Line[]; trailLines: THREE.Line[] }>({ sats: [], meshes: [], groups: { beidou: true, stations: true, gps: false, starlink: false, visual: false }, orbitLines: [], trailLines: [] });
+  const satDataRef = useRef<{
+    sats: SatRecord[]; meshes: THREE.Mesh[]; groups: Record<string, boolean>;
+    orbitLines: THREE.Line[]; trailLines: THREE.Line[];
+    starlinkPoints?: THREE.Points; starlinkSats?: SatRecord[]; starlinkPositions?: Float32Array;
+  }>({ sats: [], meshes: [], groups: { beidou: true, stations: true, gps: false, starlink: false, visual: false }, orbitLines: [], trailLines: [] });
 
   useEffect(() => {
     const scene = new THREE.Scene();
@@ -579,51 +584,41 @@ export default function App() {
       g[gid] = !g[gid];
       setSatGroups({ ...g });
 
-      // On-demand load for Starlink: fetch all 6000+ when first enabled
-      if (gid === 'starlink' && g[gid] && satDataRef.current.sats.filter(s => s.groupId === 'starlink').length === 0) {
+      // On-demand load for Starlink: use THREE.Points for 10,000+ satellites (single draw call)
+      if (gid === 'starlink' && g[gid] && !satDataRef.current.starlinkPoints) {
         setStarlinkLoading(true);
         setStarlinkProgress(0);
         const newSats = await fetchSatelliteGroup('starlink');
-        setStarlinkProgress(50);
-        // Create simple purple spheres for each Starlink sat
-        const sd = satDataRef.current;
-        const batchSize = 200;
-        for (let b = 0; b < newSats.length; b += batchSize) {
-          const batch = newSats.slice(b, b + batchSize);
-          batch.forEach(sat => {
-            const sm = new THREE.Mesh(
-              new THREE.SphereGeometry(0.0005, 4, 4), // very small dot for Starlink
-              new THREE.MeshBasicMaterial({ color: 0x8B5CF6 })
-            ) as any as THREE.Mesh;
-            const dn = sat.name;
-            sm.userData = { isSat: true, name: sat.name, displayName: dn, groupId: 'starlink', color: '#8B5CF6', satIdx: sd.meshes.length };
-            sm.visible = false; // invisible until first valid position
-            scene.add(sm);
-            sd.meshes.push(sm);
-            sd.sats.push(sat);
-            // Starlink trails — white contrails like other satellites
-            const slTrailArr = new Float32Array(TRAIL_LEN * 3);
-            satTrails.push(slTrailArr);
-            satTrailIdx.push(0);
-            satTrailReady.push(false);
-            const slTrailGeo = new THREE.BufferGeometry();
-            slTrailGeo.setAttribute('position', new THREE.BufferAttribute(slTrailArr, 3));
-            slTrailGeo.setAttribute('trailIndex', createTrailIndexAttribute(TRAIL_LEN));
-            slTrailGeo.setDrawRange(0, 0);
-            const slTrailLine = new THREE.Line(slTrailGeo, createTrailMaterial('#ffffff'));
-            slTrailLine.visible = false;
-            slTrailLine.frustumCulled = false;
-            scene.add(slTrailLine);
-            satTrailLines.push(slTrailLine);
-          });
-          setStarlinkProgress(50 + Math.round((b / newSats.length) * 50));
-          // Yield to UI
-          await new Promise(r => setTimeout(r, 0));
-        }
-        setSatellites(prev => [...prev, ...newSats]);
-        satCountRef.current!.textContent = `${sd.sats.length} 颗卫星追踪中`;
+        setStarlinkProgress(70);
+
+        // Create Points geometry — each satellite is one vertex
+        const slCount = newSats.length;
+        const slPositions = new Float32Array(slCount * 3); // all start at 0,0,0
+        const slGeo = new THREE.BufferGeometry();
+        slGeo.setAttribute('position', new THREE.BufferAttribute(slPositions, 3));
+        const slPoints = new THREE.Points(slGeo, new THREE.PointsMaterial({
+          color: 0x8B5CF6, size: 1.5, sizeAttenuation: false, transparent: true, opacity: 0.9
+        }));
+        slPoints.frustumCulled = false;
+        scene.add(slPoints);
+
+        // Store Starlink data for position updates in anim loop
+        satDataRef.current.starlinkPoints = slPoints;
+        satDataRef.current.starlinkSats = newSats;
+        satDataRef.current.starlinkPositions = slPositions;
+
+        // Add first 20 to the satellite list for panel display
+        const listSats = newSats.slice(0, 20);
+        setSatellites(prev => [...prev, ...listSats.map(s => ({ ...s, groupId: 'starlink' }))]);
+        satCountRef.current!.textContent = `${satDataRef.current.sats.length + slCount} 颗卫星追踪中`;
+        setStarlinkProgress(100);
         setStarlinkLoading(false);
         return;
+      }
+
+      // Toggle Starlink Points visibility
+      if (gid === 'starlink' && satDataRef.current.starlinkPoints) {
+        satDataRef.current.starlinkPoints.visible = g[gid];
       }
 
       satDataRef.current.meshes.forEach((sm, i) => {
@@ -752,9 +747,9 @@ export default function App() {
         el.style.display = 'block';
         const screenR = objScreenSz / 2;
         if (type === 'sat') {
-          // Satellites: label centered directly above, very close
+          // Satellites: label directly on top of the satellite dot
           el.style.left = x + 'px';
-          el.style.top = (y - Math.max(screenR, 3) - 10) + 'px';
+          el.style.top = (y - 10) + 'px'; // exactly 10px above the point
           el.style.transform = 'translateX(-50%)';
           el.style.textAlign = 'center';
           el.style.fontSize = '8px';
@@ -1074,7 +1069,7 @@ export default function App() {
     probeMeshes.forEach(m => m.visible = false);
     (window as any).__toggleL = (k: string) => {
       (layers as any)[k] = !(layers as any)[k];
-      if (k === 'probe') probeMeshes.forEach(m => m.visible = layers.probe);
+      if (k === 'probe') { probeMeshes.forEach(m => m.visible = layers.probe); setProbesVisible(layers.probe); }
     };
 
     // ═══════ REAL INITIAL POSITIONS ═══════
@@ -1394,6 +1389,25 @@ export default function App() {
 
         // Bracket markers — screen-space click helpers
         updateSatBrackets(sd, cam, sc);
+
+        // ═══ Starlink Points positions (single draw call, batched) ═══
+        if (sd.starlinkPoints?.visible && sd.starlinkSats && sd.starlinkPositions) {
+          const slSats = sd.starlinkSats;
+          const slPos = sd.starlinkPositions;
+          const slBatch = 500; // update 500 per frame
+          const slStart = (frameCount * slBatch) % slSats.length;
+          const slEnd = Math.min(slStart + slBatch, slSats.length);
+          for (let si = slStart; si < slEnd; si++) {
+            const slEci = getSatPositionECI(slSats[si], now);
+            if (slEci) {
+              const slP = eciToScene(slEci, ep, earthSceneR, sc);
+              slPos[si * 3] = slP.x;
+              slPos[si * 3 + 1] = slP.y;
+              slPos[si * 3 + 2] = slP.z;
+            }
+          }
+          sd.starlinkPoints.geometry.attributes.position.needsUpdate = true;
+        }
       }
 
       // Satellite orbit lines follow Earth position
@@ -1614,7 +1628,7 @@ export default function App() {
               {satTab === 'probes' ? (<>
                 <div className="sat-desc">太阳系深空探测器，包括旅行者号、韦伯望远镜等。位置基于JPL轨道数据。</div>
                 <label className="info-toggle" style={{ fontSize: 12, padding: '6px 0' }}>
-                  <input type="checkbox" defaultChecked onChange={() => (window as any).__toggleL('probe')} />
+                  <input type="checkbox" checked={probesVisible} onChange={() => (window as any).__toggleL('probe')} />
                   <span>显示</span>
                 </label>
                 <div className="sat-list">
