@@ -1137,7 +1137,8 @@ export default function App() {
     // Zoom helper — shared by wheel and pinch
     function applyZoom(delta: number) {
       const zoomPct = tD < 10 ? 0.0003 : tD < 800 ? 0.0004 : tD < 30000 ? 0.00015 : 0.00008;
-      const zoomMin = focSatIdx >= 0 ? 0.0001 : 0.01;
+      // When following satellite: minimum distance = near plane floor (prevents clipping through sat & Earth glow)
+      const zoomMin = focSatIdx >= 0 ? 0.002 : 0.01;
       tD = Math.max(zoomMin, Math.min(500000, tD * (1 + delta * zoomPct)));
     }
 
@@ -1960,10 +1961,48 @@ export default function App() {
       }
 
       if (focIdx >= 0) tT.copy(meshes[focIdx].position);
-      // Follow focused satellite — track its position
+      // Follow focused satellite — track position + enlarge for visibility
       if (focSatIdx >= 0) {
         const fsm = satDataRef.current.meshes[focSatIdx];
-        if (fsm && fsm.visible) tT.copy(fsm.position);
+        if (fsm) {
+          fsm.visible = true;
+          tT.copy(fsm.position);
+          // On first focus: compute a fixed enlarged scale for visibility at initial distance
+          if (!fsm.userData.baseScale) {
+            fsm.userData.baseScale = fsm.scale.x;
+            fsm.userData.focInitDist = tD; // use target distance (already set by __focusSat)
+            // Compute model radius at unit scale
+            const savedScale = fsm.scale.x;
+            fsm.scale.setScalar(1);
+            const bbox = new THREE.Box3().setFromObject(fsm);
+            const bsph = new THREE.Sphere();
+            bbox.getBoundingSphere(bsph);
+            fsm.userData.modelRadius = Math.max(bsph.radius, 0.015);
+            fsm.scale.setScalar(savedScale);
+            // Scale to be ~1/20 screen width at initial distance
+            const targetWorldR = 0.05 * tD * Math.tan(25 * Math.PI / 180);
+            fsm.userData.focScale = targetWorldR / fsm.userData.modelRadius;
+          }
+          // Blend: at initial distance or closer → use focScale (natural zoom makes it bigger/smaller)
+          // Beyond 3x initial distance → lerp back to baseScale
+          const initDist = fsm.userData.focInitDist || cD;
+          const blendStart = initDist * 2;
+          const blendEnd = initDist * 5;
+          const t2 = Math.min(Math.max((cD - blendStart) / (blendEnd - blendStart), 0), 1);
+          const currentScale = fsm.userData.focScale * (1 - t2) + fsm.userData.baseScale * t2;
+          fsm.scale.setScalar(Math.max(currentScale, fsm.userData.baseScale));
+        }
+      } else {
+        // Restore any previously focused satellite to its base scale
+        satDataRef.current.meshes.forEach(sm => {
+          if (sm && sm.userData.baseScale) {
+            sm.scale.setScalar(sm.userData.baseScale);
+            delete sm.userData.baseScale;
+            delete sm.userData.focScale;
+            delete sm.userData.focInitDist;
+            delete sm.userData.modelRadius;
+          }
+        });
       }
 
       const lf = 1 - Math.pow(.008, dt);
@@ -1996,16 +2035,25 @@ export default function App() {
       cam.position.set(cT.x + cD * Math.sin(cA.p) * Math.cos(cA.t), cT.y + cD * Math.cos(cA.p), cT.z + cD * Math.sin(cA.p) * Math.sin(cA.t));
       cam.lookAt(cT);
 
-      // Update atmosphere uniforms
+      // Update atmosphere uniforms + hide glow when camera is inside the glow sphere
       const glowSunPos = meshes[0].position;
       glowMeshes.forEach(gm => {
         const mat = gm.userData.glowMat as THREE.ShaderMaterial;
         mat.uniforms.sunPos.value.copy(glowSunPos);
         mat.uniforms.camPos.value.copy(cam.position);
+        // Hide glow if camera is inside the glow sphere (prevents visual artifacts)
+        const parent = gm.parent;
+        if (parent) {
+          const glowWorldR = gm.scale.x * (parent.scale?.x || 1);
+          const distToParent = cam.position.distanceTo(parent.position);
+          gm.visible = distToParent > glowWorldR;
+        }
       });
 
-      // Dynamic near/far plane — prevents clipping when zoomed very close
-      cam.near = Math.max(cD * 0.001, focSatIdx >= 0 ? 0.00001 : 0.0001);
+      // Dynamic near/far plane
+      // When following a satellite, near must still preserve depth precision for Earth
+      // (surface + clouds + atmosphere layers need distinguishable depth values)
+      cam.near = Math.max(cD * 0.01, 0.001);
       cam.far = Math.max(cD * 100, 2000);
       cam.updateProjectionMatrix();
 
