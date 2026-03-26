@@ -1134,15 +1134,13 @@ export default function App() {
     let cA = { t: 0.3, p: Math.PI / 3 }, cD = 105, cT = new THREE.Vector3();
     let tA = { t: 0.3, p: Math.PI / 3 }, tD = 105, tT = new THREE.Vector3();
 
-    let isTouch = false;
-    ren.domElement.addEventListener('pointerdown', e => { drag = true; dragMoved = false; isTouch = e.pointerType === 'touch'; pM = { x: e.clientX, y: e.clientY }; document.body.style.cursor = 'grabbing'; });
+    ren.domElement.addEventListener('pointerdown', e => { drag = true; dragMoved = false; pM = { x: e.clientX, y: e.clientY }; document.body.style.cursor = 'grabbing'; });
     ren.domElement.addEventListener('pointermove', e => {
       if (drag) {
         const dx = e.clientX - pM.x, dy = e.clientY - pM.y;
         if (Math.abs(dx) > 2 || Math.abs(dy) > 2) dragMoved = true;
         // Mobile touch: reverse horizontal to feel like globe dragging
-        const hDir = isTouch ? 1 : -1;
-        tA.t += hDir * dx * .004; tA.p = Math.max(.1, Math.min(Math.PI - .1, tA.p - dy * .004));
+        tA.t += dx * .004; tA.p = Math.max(.1, Math.min(Math.PI - .1, tA.p - dy * .004));
         pM = { x: e.clientX, y: e.clientY };
       }
       hoverFn(e);
