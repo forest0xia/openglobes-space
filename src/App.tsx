@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { PLANETS } from './data/planets';
 import { NATURAL_MOONS, MOON_COUNTS } from './data/moons';
 import { PROBES } from './data/probesMeta';
-import { fetchAllSatellites, fetchSatelliteGroup, getSatPositionECI, eciToScene, SAT_GROUPS, type SatRecord } from './services/celestrak';
+import { fetchAllSatellites, fetchStarlinkSatellites, getSatPositionECI, eciToScene, SAT_GROUPS, type SatRecord } from './services/celestrak';
 import { createSatelliteModel } from './utils/satModel';
 import { createProbeModel } from './utils/probeModels';
 import { createTrailMaterial, createTrailIndexAttribute } from './utils/trailShader';
@@ -588,7 +588,7 @@ export default function App() {
       if (gid === 'starlink' && g[gid] && !satDataRef.current.starlinkPoints) {
         setStarlinkLoading(true);
         setStarlinkProgress(0);
-        const newSats = await fetchSatelliteGroup('starlink');
+        const newSats = await fetchStarlinkSatellites();
         setStarlinkProgress(70);
 
         // Create Points geometry — each satellite is one vertex
