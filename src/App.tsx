@@ -893,9 +893,10 @@ export default function App() {
           const slEci = getSatPositionECI(newSats[si], initNow);
           if (slEci) {
             const slP = eciToScene(slEci, epSL, earthSceneR, scSL);
-            slPositions[si * 3] = slP.x;
-            slPositions[si * 3 + 1] = slP.y;
-            slPositions[si * 3 + 2] = slP.z;
+            // Store relative to Earth center for precision + correct following
+            slPositions[si * 3] = slP.x - epSL.x;
+            slPositions[si * 3 + 1] = slP.y - epSL.y;
+            slPositions[si * 3 + 2] = slP.z - epSL.z;
           }
           if (si % 1000 === 0) {
             setStarlinkProgress(70 + Math.round((si / slCount) * 30));
@@ -1938,11 +1939,14 @@ export default function App() {
             const slEci = getSatPositionECI(slSats[si], now);
             if (slEci) {
               const slP = eciToScene(slEci, ep, earthSceneR, sc);
-              slPos[si * 3] = slP.x;
-              slPos[si * 3 + 1] = slP.y;
-              slPos[si * 3 + 2] = slP.z;
+              // Store relative to Earth center
+              slPos[si * 3] = slP.x - ep.x;
+              slPos[si * 3 + 1] = slP.y - ep.y;
+              slPos[si * 3 + 2] = slP.z - ep.z;
             }
           }
+          // Position Points at Earth center — all vertices move with Earth
+          sd.starlinkPoints.position.copy(ep);
           sd.starlinkPoints.geometry.attributes.position.needsUpdate = true;
         }
       }
@@ -2171,7 +2175,7 @@ export default function App() {
 
       {showStatus && (
         <div className="status">
-          <div className="status-line"><span className="status-dot" style={{ background: 'var(--glow)' }} /><span ref={satCountRef}>{satellites.length + (starlinkTotal || 0)} 颗卫星追踪中</span></div>
+          <div className="status-line"><span className="status-dot" style={{ background: 'var(--glow)' }} /><span>{satellites.length + starlinkTotal} 颗卫星追踪中</span></div>
           <div className="status-line"><span className="status-dot" style={{ background: 'var(--warm)' }} /><span>{PROBES.length} 个深空探测器</span></div>
         </div>
       )}

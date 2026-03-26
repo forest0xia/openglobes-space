@@ -44,8 +44,12 @@ Real-time 3D solar system visualization with satellite tracking, NASA textures, 
 - **北斗导航系统 (BeiDou)** — MEO/GEO/IGSO 全星座实时位置
 - **GPS 星座** — 全部在轨 GPS 卫星
 - **空间站 (Stations)** — 国际空间站 (ISS)、天宫空间站、载人飞船等
+- **Starlink** — 约 10,000 颗 SpaceX 星链卫星，使用 THREE.Points 单次绘制调用渲染，自动过滤仅显示 300-800km LEO 在轨运行卫星
+- **明亮卫星 (Brightest)** — 地面肉眼可见的明亮卫星
 - **SGP4 实时传播** — 使用 satellite.js 从 TLE 数据计算 ECI 坐标
 - **3D 卫星模型** — ISS、TDRS、Landsat 8 使用 NASA 3D 模型，通用卫星使用 Poly 模型
+- **跨组去重** — 按 NORAD ID 去重，避免同一颗卫星在多个组中重复显示
+- **缓存优先** — 预缓存的 JSON 文件由 GitHub Actions 每日更新，页面加载直接使用缓存，超过 48 小时才回退到 CelesTrak 实时 API
 
 ### 深空探测器 / Deep Space Probes
 
@@ -57,12 +61,25 @@ Real-time 3D solar system visualization with satellite tracking, NASA textures, 
 - **深空背景** — 哈勃超深场 (Hubble Ultra Deep Field) 图像
 - **多尺度缩放** — 从行星表面到银河系的无缝过渡，乘法式缩放速度
 
+### 渲染技术 / Rendering Techniques
+
+- **浮动原点坐标系 (Floating Origin)** — 卫星轨迹和 Starlink 点云的顶点坐标存储为相对于地球中心的偏移量（非绝对世界坐标），几何体 `.position` 每帧设为地球位置。解决了 GPU float32 在世界坐标 ~20 处的精度不足问题，消除了高速/近距观察时的抖动
+- **大气光晕 (Atmosphere Glow)** — 基于 Three.js 官方地球示例 (webgpu_tsl_earth) 移植的 Fresnel 光晕系统：BackSide 外圈光环 + FrontSide 表面大气层，日光色/暮光色混合，太阳朝向感知
+- **行星遮挡 (Planet Occlusion)** — 标签、辅助框、卫星标记在行星背后时自动隐藏，基于相机-行星-目标的角度计算
+- **行星自转** — 使用真实恒星日周期（数据来自 NASA），基于模拟时间的确定性旋转
+- **Line2 轨道线** — 行星轨道使用 Three.js Line2 扩展，支持像素级线宽，预乘暗色避免透明度接缝
+
 ### 交互与体验 / Interaction & Experience
 
-- **环境音效** — 太空氛围背景音乐
+- **环境音效** — 太空氛围背景音乐（默认关闭）
 - **中英双语** — 所有行星、卫星、探测器均提供中英文名称与说明
-- **信息面板** — 点击天体显示详细数据（直径、温度、公转周期、趣味事实等）
-- **真实比例模式** — 可切换为真实半径比例，感受行星相对太阳的实际大小
+- **信息面板** — 选中天体后显示提示图标，点击展开详细数据面板
+- **卫星管理面板** — 分类标签 + 详情内容的双栏布局，支持各组的开关、列表浏览和聚焦
+- **设置面板** — 5 个标签页（显示/轨道/辅助框/可见性/音效），所有参数实时生效
+- **光晕调试面板** — 按 G 键打开，实时滑块调节所有行星的大气光晕参数并导出
+- **选择辅助框** — 行星和卫星在屏幕上过小时显示圆形/方形辅助框，悬停显示名称
+- **手机适配** — 双指缩放、触摸拖拽反向（类球体旋转）、响应式面板布局、星体快速选择导航
+- **真实比例模式** — 真实半径比例，感受行星相对太阳的实际大小
 
 ---
 
@@ -108,8 +125,11 @@ Real-time 3D solar system visualization with satellite tracking, NASA textures, 
 | 北斗 (BeiDou) | `beidou` | 中国北斗导航系统全星座 |
 | GPS | `gps-ops` | 美国 GPS 导航系统在轨卫星 |
 | 空间站 (Stations) | `stations` | ISS、天宫、载人飞船及相关目标 |
+| Starlink | `starlink` | SpaceX 星链卫星，启用后过滤至 300-800km LEO |
+| 明亮卫星 (Brightest) | `visual` | 地面肉眼可见的 100 颗最亮卫星 |
 
-- **缓存策略**: 数据缓存在 `localStorage`，有效期 **2 小时**（`CACHE_TTL = 2 * 60 * 60 * 1000 ms`）
+- **缓存策略**: GitHub Actions 每日 06:00 UTC 抓取并提交到 `public/data/satellites-cache.json`，页面直接加载静态文件。超过 48 小时未更新才回退到 CelesTrak 实时 API
+- **去重**: 同一颗卫星可能出现在多个组（如 ISS 同时在 stations 和 visual 中），按 NORAD ID 去重，先加载的组优先保留
 
 ### SGP4 轨道传播 / SGP4 Propagation
 
@@ -237,6 +257,32 @@ localStorage.removeItem('sat_cache_stations');
 - 地心距离 < 100 km (已坠毁) → 丢弃
 - 地心距离 > 500,000 km (异常) → 丢弃
 - 名称匹配碎片/火箭残骸模式 → 丢弃
+- Starlink 特殊过滤：仅保留高度 300-800km 的 LEO 卫星（过滤退役、调轨中、错误轨道）
+
+### 浮动原点 / Floating Origin
+
+GPU 使用 float32 运算，在世界坐标 ~20（地球位置约 20 AU 场景单位）处精度仅约 0.000002。当相机靠近卫星时，卫星位置和相机位置的微小差异无法被 float32 区分，导致严重抖动。
+
+**解决方案**：卫星轨迹（trail）和 Starlink 点云的顶点存储为**相对于地球中心的偏移量**（约 0.01-0.1 场景单位），而非绝对世界坐标。几何体的 `.position` 每帧设为地球的世界位置。
+
+```
+// 绝对坐标（抖动）: vertex = (20.05, 0.03, -19.5), camera = (20.049, 0.031, -19.501)
+// 相对坐标（稳定）: vertex = (0.05, 0.003, -0.002), geometry.position = earth.position
+```
+
+这样 GPU 处理的顶点值都在 0 附近，float32 精度极高（~10^-7），彻底消除抖动。
+
+### 性能优化 / Performance
+
+| 优化 | 说明 |
+|------|------|
+| Starlink THREE.Points | 约 5000+ 颗卫星用单次绘制调用渲染（vs 独立 Mesh 的 5000+ 次调用） |
+| 批量 SGP4 更新 | Starlink 每帧仅更新 500 颗位置，~12 帧轮完一圈 |
+| 轨迹交错更新 | 卫星轨迹每 60 帧重算一次，不同卫星分散在不同帧 |
+| 按需加载 Starlink | 用户启用 Starlink 组时才加载和计算，不影响首屏 |
+| 动态近远平面 | `cam.near/far` 随 `cD` 动态调整，避免深度冲突 |
+| 屏幕尺寸隐藏 | 行星、卫星、辅助框在屏幕上过小时自动隐藏 |
+| 行星遮挡剔除 | 标签/辅助框在行星背后时跳过渲染 |
 
 ---
 
@@ -245,14 +291,13 @@ localStorage.removeItem('sat_cache_stations');
 | 类别 | 技术 |
 |------|------|
 | 框架 | [React](https://react.dev) 19 |
-| 3D 渲染 | [Three.js](https://threejs.org) via [@react-three/fiber](https://docs.pmnd.rs/react-three-fiber) + [@react-three/drei](https://github.com/pmndrs/drei) |
-| 后处理 | [@react-three/postprocessing](https://github.com/pmndrs/react-postprocessing) |
-| 轨道传播 | [satellite.js](https://github.com/shashwatak/satellite-js) 5.0 |
-| 状态管理 | [Zustand](https://github.com/pmndrs/zustand) |
+| 3D 渲染 | [Three.js](https://threejs.org) — 原生 API（非 React Three Fiber），含 Line2、LineMaterial 扩展 |
+| 轨道传播 | [satellite.js](https://github.com/shashwatak/satellite-js) 5.0 — SGP4/SDP4 |
 | 构建工具 | [Vite](https://vite.dev) 8 |
 | 语言 | [TypeScript](https://www.typescriptlang.org) 5.9 |
-| 样式 | [Tailwind CSS](https://tailwindcss.com) 4 (minimal) |
+| 样式 | 纯 CSS（无框架），CSS Variables + Glassmorphism |
 | 部署 | GitHub Actions → GitHub Pages |
+| 数据更新 | GitHub Actions cron (每日 06:00 UTC) → CelesTrak 抓取 → 自动提交 |
 
 ---
 
