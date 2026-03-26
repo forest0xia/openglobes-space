@@ -409,7 +409,7 @@ export default function App() {
           transparent: true,
           depthWrite: false,
         });
-        const gm = new THREE.Mesh(new THREE.SphereGeometry(p.r * 1.002, 48, 48), mat);
+        const gm = new THREE.Mesh(new THREE.SphereGeometry(p.r * 1.01, 48, 48), mat);
         gm.renderOrder = 999;
         gm.userData.isGlow = true;
         gm.userData.glowMat = mat;
@@ -423,7 +423,7 @@ export default function App() {
         addAtmosphere(m, { scale: 1.15, dayColor: [1, .85, .3], twilightColor: [1, .4, .1],
           fresnelLow: 0.5, fresnelPow: 2.0, sunFadeMin: -1, sunFadeMax: 1, isSun: true });
       } else if (p.id === 'earth') {
-        addAtmosphere(m, { scale: 1.02, dayColor: [.3, .7, 1], twilightColor: [.74, .29, .04],
+        addAtmosphere(m, { scale: 1.03, dayColor: [.3, .7, 1], twilightColor: [.74, .29, .04],
           fresnelLow: 0.73, fresnelPow: 3.0, sunFadeMin: -0.5, sunFadeMax: 1.0 });
         addSurfaceAtmo(m, [.3, .7, 1], [.74, .29, .04], 0.7);
       } else if (p.id === 'venus') {
@@ -1023,9 +1023,11 @@ export default function App() {
           el.style.fontSize = '8px';
         } else {
           // Planets/moons/probes: label to upper-right
-          const offset = Math.max(screenR + 4, 6);
+          // Moons: cap offset so label stays close when moon is tiny
+          const maxOff = type === 'moon' ? 12 : 999;
+          const offset = Math.min(Math.max(screenR + 4, 6), maxOff);
           el.style.left = (x + offset) + 'px';
-          el.style.top = (y - Math.max(screenR * 0.3, 4)) + 'px';
+          el.style.top = (y - Math.min(Math.max(screenR * 0.3, 4), maxOff)) + 'px';
           el.style.transform = '';
           el.style.textAlign = 'left';
           el.style.fontSize = type === 'planet' ? '14px' : type === 'moon' ? '10px' : '9px';
@@ -1323,6 +1325,7 @@ export default function App() {
     // 1 = real-time, 86400 = 1 day/s, 2592000 = 1 month/s, etc.
     const SPEED_PRESETS = [
       { v: 1, label: '1秒' },
+      { v: 30, label: '30秒' },
       { v: 60, label: '1分' },
       { v: 300, label: '5分' },
       { v: 900, label: '15分' },
@@ -1578,10 +1581,12 @@ export default function App() {
           if (parentScreenSz < innerHeight / 100) { h.el.style.display = 'none'; continue; }
         }
 
-        // Only show helper when object is too small on screen (< 20px)
+        // Only show helper when object is too small on screen (< 20px) but not sub-pixel
         const worldR = h.getWorldR();
         const screenSz = getScreenSize(mesh, cam, worldR);
         if (screenSz >= 20) { h.el.style.display = 'none'; continue; }
+        // Hide when truly invisible (sub-pixel) — too zoomed out
+        if (h.type === 'planet' && screenSz < innerHeight / 5000) { h.el.style.display = 'none'; continue; }
         // Don't show if behind camera
         helperVec.setFromMatrixPosition(mesh.matrixWorld);
         if (isOccludedByPlanet(helperVec.clone())) { h.el.style.display = 'none'; continue; }
@@ -2081,8 +2086,8 @@ export default function App() {
       {/* Satellite List Panel */}
       {satListOpen && (
         <div className="sat-panel" id="__satPanel">
-          <div style={{ position: 'absolute', top: 6, right: 8, zIndex: 10, cursor: 'pointer', fontSize: 14, color: '#888', lineHeight: 1 }}
-            onClick={() => setSatListOpen(false)}>✕</div>
+          <button className="info-close" style={{ position: 'absolute', top: 10, right: 10, zIndex: 10 }}
+            onClick={() => setSatListOpen(false)}>✕</button>
           <div className="sat-panel-drag" onPointerDown={(e) => {
             e.preventDefault();
             const el = document.getElementById('__satPanel')!;
@@ -2094,10 +2099,9 @@ export default function App() {
             const onUp = () => { el.style.transition = ''; window.removeEventListener('pointermove', onMove); window.removeEventListener('pointerup', onUp); };
             window.addEventListener('pointermove', onMove); window.addEventListener('pointerup', onUp);
           }} />
-          {/* Vertical sidebar tabs + content */}
           <div className="sat-layout">
             <div className="sat-sidebar">
-              {/* Custom order: 北斗, 探测器, 空间站, Starlink, GPS, 明亮卫星 */}
+              <div className="sat-col-title">分类</div>
               {['beidou', 'probes', 'stations', 'starlink', 'gps', 'visual'].map(tid => {
                 if (tid === 'probes') return (
                   <button key="probes" className={`sat-tab ${satTab === 'probes' ? 'active' : ''}`} onClick={() => setSatTab('probes')}>
@@ -2116,12 +2120,20 @@ export default function App() {
               })}
             </div>
             <div className="sat-content">
+              <div className="sat-col-title">详情</div>
               {satTab === 'probes' ? (<>
-                <div className="sat-desc">太阳系深空探测器，包括旅行者号、韦伯望远镜等。位置基于JPL轨道数据。</div>
+                <div className="sat-content-header">
+                  <div className="sat-content-title">深空探测器</div>
+                  <div className="sat-content-sub">太阳系深空探测器，包括旅行者号、韦伯望远镜等</div>
+                </div>
+                <div className="sat-content-divider" />
+                <div className="sat-desc">位置基于JPL轨道数据。</div>
                 <label className="info-toggle" style={{ fontSize: 12, padding: '6px 0' }}>
                   <input type="checkbox" checked={probesVisible} onChange={() => (window as any).__toggleL('probe')} />
                   <span>显示</span>
                 </label>
+                <div className="sat-content-divider" />
+                <div style={{ fontSize: 9, color: 'var(--text-dim)', marginBottom: 4 }}>列表</div>
                 <div className="sat-list">
                   {PROBES.map((pr, i) => (
                     <div key={pr.id} className="sat-item" onClick={() => (window as any).__focusProbeByIdx?.(i)}>
@@ -2149,7 +2161,11 @@ export default function App() {
                 };
                 const groupSats = satellites.filter(s => s.groupId === g.id);
                 return (<>
-                  <div className="sat-desc">{descs[g.id]}</div>
+                  <div className="sat-content-header">
+                    <div className="sat-content-title">{g.labelCn}</div>
+                    <div className="sat-content-sub">{descs[g.id]}</div>
+                  </div>
+                  <div className="sat-content-divider" />
                   <div className="sat-ref">{refs[g.id]}</div>
                   <label className="info-toggle" style={{ fontSize: 12, padding: '6px 0' }}>
                     <input type="checkbox" checked={satGroups[g.id] ?? false} onChange={() => (window as any).__toggleSatGroup(g.id)} />
@@ -2164,6 +2180,8 @@ export default function App() {
                       </div>
                     </div>
                   )}
+                  <div className="sat-content-divider" />
+                  <div style={{ fontSize: 9, color: 'var(--text-dim)', marginBottom: 4 }}>列表 · {groupSats.length} 颗</div>
                   <div className="sat-list">
                     {groupSats.length > 0 ? groupSats.map((s) => {
                       const realIdx = satellites.indexOf(s);

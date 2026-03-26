@@ -222,15 +222,15 @@ canvas{display:block;position:fixed;inset:0;z-index:1}
 
 /* ═══════ SATELLITE PANEL ═══════ */
 .sat-panel{
-  position:fixed;left:70px;top:70px;z-index:100;width:320px;max-height:65vh;
+  position:fixed;left:70px;top:70px;z-index:100;width:380px;max-height:65vh;
   background:var(--glass);border:1px solid var(--glass-edge);border-radius:14px;
-  backdrop-filter:blur(25px);padding:16px;overflow:hidden;display:flex;flex-direction:column;
+  backdrop-filter:blur(25px);padding:16px;padding-top:44px;overflow:hidden;display:flex;flex-direction:column;
 }
 @media(max-width:768px){
   .sat-panel{left:20px;right:20px;width:auto;top:auto;bottom:90px;max-height:40vh}
 }
 .sat-panel-drag{
-  position:absolute;top:0;left:0;right:0;height:24px;cursor:grab;border-radius:14px 14px 0 0;user-select:none;z-index:1;
+  position:absolute;top:0;left:0;right:0;height:40px;cursor:grab;border-radius:14px 14px 0 0;user-select:none;z-index:1;
 }
 .sat-panel-drag:active{cursor:grabbing}
 .sat-panel-drag::after{content:'';display:block;width:28px;height:3px;background:var(--glass-edge);border-radius:2px;margin:8px auto 0}
@@ -250,7 +250,12 @@ canvas{display:block;position:fixed;inset:0;z-index:1}
 .sat-tab-count{font-size:8px;color:var(--text-dim);display:block;padding-left:7px}
 .sat-tab-row{display:flex;align-items:center;gap:3px;white-space:nowrap}
 .sat-tab-dot{width:4px;height:4px;border-radius:50%;flex-shrink:0}
+.sat-col-title{font-family:var(--font-mono);font-size:9px;color:var(--glow);letter-spacing:1px;text-transform:uppercase;margin-bottom:6px;padding-bottom:4px;border-bottom:1px solid var(--glass-edge);opacity:.7}
 .sat-content{flex:1;padding-left:10px;overflow-y:auto;min-width:0}
+.sat-content-header{margin-bottom:8px}
+.sat-content-title{font-family:var(--font-cn);font-size:13px;font-weight:500;color:var(--text);margin-bottom:2px}
+.sat-content-sub{font-size:10px;color:var(--text-dim);margin-bottom:6px;font-family:var(--font-cn)}
+.sat-content-divider{height:1px;background:var(--glass-edge);margin:8px 0}
 .sat-desc{font-size:11px;color:var(--text);line-height:1.6;margin-bottom:6px;font-family:var(--font-cn)}
 .sat-ref{font-size:9px;color:var(--text-dim);margin-bottom:6px;font-style:italic}
 .sat-panel-divider{height:1px;background:var(--glass-edge);margin:10px 0}
