@@ -1457,67 +1457,71 @@ export default function App() {
             const onUp = () => { el.style.transition = ''; window.removeEventListener('pointermove', onMove); window.removeEventListener('pointerup', onUp); };
             window.addEventListener('pointermove', onMove); window.addEventListener('pointerup', onUp);
           }} />
-          {/* Tab bar */}
-          <div className="sat-tabs">
-            <button className={`sat-tab ${satTab === 'probes' ? 'active' : ''}`} onClick={() => setSatTab('probes')}>探测器</button>
-            {SAT_GROUPS.map(g => (
-              <button key={g.id} className={`sat-tab ${satTab === g.id ? 'active' : ''}`} onClick={() => setSatTab(g.id)} style={{ color: satTab === g.id ? g.color : undefined }}>
-                {g.labelCn}
-                <span className="sat-tab-count">{satellites.filter(s => s.groupId === g.id).length}</span>
-              </button>
-            ))}
-          </div>
-
-          {/* Tab content */}
-          {satTab === 'probes' ? (
-            <div>
-              <label className="info-toggle" style={{ marginBottom: 4, fontSize: 12 }}>
-                <input type="checkbox" defaultChecked onChange={() => (window as any).__toggleL('probe')} />
-                <span>显示探测器</span>
-              </label>
-              <div className="sat-list">
-                {PROBES.map((pr, i) => (
-                  <div key={pr.id} className="sat-item" onClick={() => (window as any).__focusProbeByIdx?.(i)}>
-                    <span className="sat-dot" style={{ background: pr.color }} />
-                    <span className="sat-name">{pr.nameCn}</span>
-                  </div>
-                ))}
-              </div>
+          {/* Vertical sidebar tabs + content */}
+          <div className="sat-layout">
+            <div className="sat-sidebar">
+              <button className={`sat-tab ${satTab === 'probes' ? 'active' : ''}`} onClick={() => setSatTab('probes')}>探测器<span className="sat-tab-count">{PROBES.length}</span></button>
+              {SAT_GROUPS.map(g => (
+                <button key={g.id} className={`sat-tab ${satTab === g.id ? 'active' : ''}`} onClick={() => setSatTab(g.id)}>
+                  <span className="sat-tab-dot" style={{ background: g.color }} />{g.labelCn}<span className="sat-tab-count">{satellites.filter(s => s.groupId === g.id).length}</span>
+                </button>
+              ))}
             </div>
-          ) : (() => {
-            const g = SAT_GROUPS.find(gg => gg.id === satTab);
-            if (!g) return null;
-            const descriptions: Record<string, string> = {
-              beidou: '中国北斗卫星导航系统，中圆/地球同步轨道(MEO/GEO)，高度约21,500-35,786km',
-              stations: '国际空间站(ISS)、中国空间站(CSS)等载人航天器，近地轨道(LEO)约400km',
-              gps: '美国全球定位系统，中圆轨道(MEO)约20,200km，共31颗在轨卫星',
-              starlink: 'SpaceX星链互联网卫星星座，近地轨道(LEO)约550km，在轨6000+颗（展示前20颗）',
-              visual: '地面肉眼可见的明亮卫星（约100颗），多数在近地轨道(LEO)200-2000km',
-            };
-            const groupSats = satellites.filter(s => s.groupId === g.id);
-            return (
-              <div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-                  <label className="info-toggle" style={{ flex: 1, fontSize: 12 }}>
+            <div className="sat-content">
+              {satTab === 'probes' ? (<>
+                <div className="sat-desc">太阳系深空探测器，包括旅行者号、韦伯望远镜等。位置基于JPL轨道数据。</div>
+                <label className="info-toggle" style={{ fontSize: 12, padding: '6px 0' }}>
+                  <input type="checkbox" defaultChecked onChange={() => (window as any).__toggleL('probe')} />
+                  <span>显示</span>
+                </label>
+                <div className="sat-list">
+                  {PROBES.map((pr, i) => (
+                    <div key={pr.id} className="sat-item" onClick={() => (window as any).__focusProbeByIdx?.(i)}>
+                      <span className="sat-dot" style={{ background: pr.color }} />
+                      <span className="sat-name">{pr.nameCn}</span>
+                    </div>
+                  ))}
+                </div>
+              </>) : (() => {
+                const g = SAT_GROUPS.find(gg => gg.id === satTab);
+                if (!g) return null;
+                const descs: Record<string, string> = {
+                  beidou: '中国北斗导航系统。MEO/GEO轨道，高度21,500-35,786km。',
+                  stations: 'ISS、中国空间站等载人航天器。LEO约400km。',
+                  gps: '美国GPS导航系统。MEO约20,200km，31颗在轨。',
+                  starlink: 'SpaceX星链。LEO约550km，在轨6000+颗（展示前20）。',
+                  visual: '地面肉眼可见的明亮卫星。多在LEO 200-2000km。',
+                };
+                const refs: Record<string, string> = {
+                  beidou: '数据来源：CelesTrak · celestrak.org',
+                  stations: '数据来源：CelesTrak · 实时TLE轨道数据',
+                  gps: '数据来源：CelesTrak · GPS Operational',
+                  starlink: '数据来源：CelesTrak · Starlink Group',
+                  visual: '数据来源：CelesTrak · 100 Brightest',
+                };
+                const groupSats = satellites.filter(s => s.groupId === g.id);
+                return (<>
+                  <div className="sat-desc">{descs[g.id]}</div>
+                  <div className="sat-ref">{refs[g.id]}</div>
+                  <label className="info-toggle" style={{ fontSize: 12, padding: '6px 0' }}>
                     <input type="checkbox" checked={satGroups[g.id] ?? false} onChange={() => (window as any).__toggleSatGroup(g.id)} />
                     <span>显示</span>
                   </label>
-                  <span onClick={() => setToast({ title: g.labelCn, text: descriptions[g.id] || '' })} style={{ cursor: 'pointer', color: 'var(--glow)', fontSize: 11, padding: '4px 10px', background: 'rgba(94,234,212,0.08)', borderRadius: 10 }}>详情</span>
-                </div>
-                <div className="sat-list">
-                  {groupSats.length > 0 ? groupSats.map((s) => {
-                    const realIdx = satellites.indexOf(s);
-                    return (
-                      <div key={realIdx} className="sat-item" onClick={() => (window as any).__focusSat(realIdx)}>
-                        <span className="sat-dot" style={{ background: s.color }} />
-                        <span className="sat-name">{getSatDisplayName(s.name, s.noradId)}</span>
-                      </div>
-                    );
-                  }) : <div className="sat-loading">加载中...</div>}
-                </div>
-              </div>
-            );
-          })()}
+                  <div className="sat-list">
+                    {groupSats.length > 0 ? groupSats.map((s) => {
+                      const realIdx = satellites.indexOf(s);
+                      return (
+                        <div key={realIdx} className="sat-item" onClick={() => (window as any).__focusSat(realIdx)}>
+                          <span className="sat-dot" style={{ background: s.color }} />
+                          <span className="sat-name">{getSatDisplayName(s.name, s.noradId)}</span>
+                        </div>
+                      );
+                    }) : <div className="sat-loading">加载中...</div>}
+                  </div>
+                </>);
+              })()}
+            </div>
+          </div>
         </div>
       )}
 
