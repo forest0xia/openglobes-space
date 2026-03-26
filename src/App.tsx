@@ -1516,7 +1516,8 @@ export default function App() {
                 if (!g) return null;
                 return (
                   <button key={g.id} className={`sat-tab ${satTab === g.id ? 'active' : ''}`} onClick={() => setSatTab(g.id)}>
-                    <span className="sat-tab-dot" style={{ background: g.color }} />{g.labelCn}<span className="sat-tab-count">{satellites.filter(s => s.groupId === g.id).length}</span>
+                    <span className="sat-tab-row"><span className="sat-tab-dot" style={{ background: g.color }} />{g.labelCn}</span>
+                    <span className="sat-tab-count">{satellites.filter(s => s.groupId === g.id).length}</span>
                   </button>
                 );
               })}
