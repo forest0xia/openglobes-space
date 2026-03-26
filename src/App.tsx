@@ -1162,7 +1162,7 @@ export default function App() {
       return (worldRadius / (dist * Math.tan(fov / 2))) * innerHeight;
     }
 
-    let satSize = 0.003;
+    // (satSize removed — brackets always shown)
     const MIN_SCREEN_FRAC = 1 / 5000; // hide objects + labels + orbits when smaller than 1/5000 of screen
 
     // ═══════ ANIMATE ═══════
