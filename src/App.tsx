@@ -101,10 +101,24 @@ export default function App() {
   const [satListOpen, setSatListOpen] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [mobileSettingsOpen, setMobileSettingsOpen] = useState(false);
+  // Close all panels — only one panel at a time
+  const closeAllPanels = (except?: string) => {
+    if (except !== 'sat') setSatListOpen(false);
+    if (except !== 'mobileNav') setMobileNavOpen(false);
+    if (except !== 'mobileSettings') setMobileSettingsOpen(false);
+    if (except !== 'info') infoRef.current?.classList.remove('open');
+  };
+  (window as any).__closeAllPanels = closeAllPanels;
+  (window as any).__showInfoHint = () => { setInfoHint(true); };
+  (window as any).__openInfo = () => { closeAllPanels('info'); infoRef.current?.classList.add('open'); setInfoHint(false); };
   const [toast, setToast] = useState<{ title: string; text: string } | null>(null);
   const [satTab, setSatTab] = useState('beidou');
+  const [settingsTab, setSettingsTab] = useState('display');
+  const [infoHint, setInfoHint] = useState(false);
+  const [showStatus, setShowStatus] = useState(typeof window !== 'undefined' && window.innerWidth > 768);
   const [starlinkLoading, setStarlinkLoading] = useState(false);
   const [starlinkProgress, setStarlinkProgress] = useState(0);
+  const [starlinkTotal, setStarlinkTotal] = useState(0);
   const [probesVisible, setProbesVisible] = useState(false);
   const [satellites, setSatellites] = useState<SatRecord[]>([]);
   const [satGroups, setSatGroups] = useState<Record<string, boolean>>({ beidou: true, stations: true, gps: false, starlink: false, visual: false });
@@ -117,6 +131,18 @@ export default function App() {
   }>({ sats: [], meshes: [], groups: { beidou: true, stations: true, gps: false, starlink: false, visual: false }, orbitLines: [], trailLines: [] });
 
   useEffect(() => {
+    // Tunable settings — exposed on window for UI sliders
+    const cfg = (window as any).__cfg = {
+      planetOrbitWidth: 1.5,   // px
+      satTrailWidth: 1,        // px (LineBasicMaterial — always 1 on most GPUs)
+      helperSize: 18,          // px
+      bracketSize: 12,         // px
+      labelHideFrac: 5000,     // labels hidden when object < innerHeight/this
+      satLabelHideFrac: 1000,  // sat labels hidden when Earth < innerHeight/this
+      moonLabelHideFrac: 100,  // moon labels hidden when parent < innerHeight/this
+      helperHideFrac: 5000,    // planet helpers hidden when < innerHeight/this
+      satBracketHideFrac: 1000, // sat brackets hidden when Earth < innerHeight/this
+    };
     const scene = new THREE.Scene();
     const cam = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, .1, 2000);
     const ren = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' });
@@ -146,11 +172,11 @@ export default function App() {
     const audio = new Audio(BASE + 'audio/' + TRACKS[0].file);
     audio.loop = true;
     audio.volume = 0.15;
-    const startAudio = () => { audio.play().catch(() => {}); document.removeEventListener('click', startAudio); };
-    document.addEventListener('click', startAudio);
+    audio.muted = true; // default off
 
     (window as any).__toggleSound = () => {
       audio.muted = !audio.muted;
+      if (!audio.muted && audio.paused) audio.play().catch(() => {});
       const btn = document.getElementById('__soundBtn');
       if (btn) { btn.textContent = audio.muted ? '静音' : '音效'; btn.classList.toggle('on', !audio.muted); }
     };
@@ -534,7 +560,7 @@ export default function App() {
         lg.setPositions(op);
         const lm = new LineMaterial({
           color: darkenHex(p.col, 0.45),
-          linewidth: 1.5,
+          linewidth: cfg.planetOrbitWidth,
           resolution: new THREE.Vector2(innerWidth, innerHeight),
         });
         const ol = new Line2(lg, lm);
@@ -706,6 +732,16 @@ export default function App() {
       document.getElementById('__orbitBtn')?.classList.toggle('on', showOrbits);
       // Planet orbits
       orbitLines.forEach(ol => { ol.visible = showOrbits; });
+      // Expose orbit updaters for settings panel
+      (window as any).__updateOrbitWidth = (w: number) => {
+        orbitLines.forEach(ol => { if ((ol as any).material?.linewidth !== undefined) (ol as any).material.linewidth = w; });
+      };
+      (window as any).__updateSatOrbitOpacity = (o: number) => {
+        satDataRef.current.orbitLines.forEach(ol => { if ((ol as any).material) (ol as any).material.opacity = o; });
+      };
+      (window as any).__updateSatTrailOpacity = (o: number) => {
+        satDataRef.current.trailLines.forEach(tl => { if ((tl as any).material?.uniforms?.opacity) (tl as any).material.uniforms.opacity.value = o; });
+      };
       // Natural moon orbits
       naturalMoonOrbits.forEach(ol => { ol.visible = showOrbits; });
       // Moon orbit line
@@ -778,7 +814,7 @@ export default function App() {
     fetchAllSatellites().then(sats => {
       setSatellites(sats);
       satDataRef.current.sats = sats;
-      satCountRef.current!.textContent = `${sats.length} 颗卫星追踪中`;
+      if (satCountRef.current) satCountRef.current.textContent = `${sats.length} 颗卫星追踪中`;
 
       sats.forEach(sat => {
         const displayName = getSatDisplayName(sat.name, sat.noradId);
@@ -833,6 +869,7 @@ export default function App() {
         setStarlinkProgress(0);
         const newSats = await fetchStarlinkSatellites();
         setStarlinkProgress(70);
+        setStarlinkTotal(newSats.length);
 
         // Create Points geometry — each satellite is one vertex
         const slCount = newSats.length;
@@ -873,7 +910,7 @@ export default function App() {
 
         const listSats = newSats.slice(0, 20);
         setSatellites(prev => [...prev, ...listSats.map(s => ({ ...s, groupId: 'starlink' }))]);
-        satCountRef.current!.textContent = `${satDataRef.current.sats.length + slCount} 颗卫星追踪中`;
+        if (satCountRef.current) satCountRef.current.textContent = `${satDataRef.current.sats.length + slCount} 颗卫星追踪中`;
         setStarlinkProgress(100);
         setStarlinkLoading(false);
         return;
@@ -952,7 +989,7 @@ export default function App() {
         <div><div class="info-stat-label">偏心率</div><div class="info-stat-val">${sr.ecco?.toFixed(4) ?? '?'}</div></div>
       `;
       iExtrasRef.current!.innerHTML = '';
-      infoRef.current!.classList.add('open');
+      (window as any).__showInfoHint();
     };
 
     // ═══════ LABELS ═══════
@@ -996,15 +1033,15 @@ export default function App() {
         if (!mesh.visible) { el.style.display = 'none'; return; }
         // For satellites: hide when Earth < 1/100 screen
         // Hide satellite labels when Earth < 1/1000 screen (too zoomed out, labels overlap)
-        if (type === 'sat' && earthScreenL < innerHeight / 1000) { el.style.display = 'none'; return; }
+        if (type === 'sat' && earthScreenL < innerHeight / cfg.satLabelHideFrac) { el.style.display = 'none'; return; }
         // For natural moons: hide when their parent planet < 1/100 screen
         if (type === 'moon') {
           const pIdx = mesh.userData?.parentIdx ?? earthIdxL;
           const parentScreenSz = getScreenSize(meshes[pIdx], cam, baseScale(pIdx) * P[pIdx].r);
-          if (parentScreenSz < innerHeight / 100) { el.style.display = 'none'; return; }
+          if (parentScreenSz < innerHeight / cfg.moonLabelHideFrac) { el.style.display = 'none'; return; }
         }
         const objScreenSz = getScreenSize(mesh, cam, mesh.scale?.x || 1);
-        const threshold = type === 'sat' ? innerHeight / 2000 : innerHeight * MIN_SCREEN_FRAC;
+        const threshold = type === 'sat' ? innerHeight / 2000 : innerHeight / cfg.labelHideFrac;
         if (objScreenSz < threshold) { el.style.display = 'none'; return; }
         labelVec.setFromMatrixPosition(mesh.matrixWorld);
         // Occluded by a planet? Hide label
@@ -1216,11 +1253,18 @@ export default function App() {
     applyAllScales();
     // (cloud layer always visible — no toggle)
 
-    // Unified: compute camera distance so object fills ~70% of screen
-    // fov=50°, 70% of fov = 35° half-angle = 17.5°. dist = r / tan(17.5°) ≈ r * 3.17
-    // Minimum: surface + 15% to prevent entering the object
+    // Compute camera distance so object fills screen nicely
+    // Desktop: ~70% of height. Mobile: account for narrow width (fill 80% of min dimension)
     function fitDistance(visualRadius: number): number {
-      return Math.max(visualRadius * 3.2, visualRadius * 1.15);
+      const isMobile = innerWidth < 768;
+      // On mobile portrait, width < height, so planet must fit within width
+      // screenFraction = r / (dist * tan(fov/2)) → dist = r / (fraction * tan(fov/2))
+      const fraction = isMobile ? 0.35 : 0.45; // fraction of half-screen (smaller = more zoom out)
+      const tanHalf = Math.tan(25 * Math.PI / 180);
+      const aspect = innerWidth / innerHeight;
+      // Use the narrower dimension
+      const effectiveFraction = isMobile ? fraction * Math.min(aspect, 1) : fraction;
+      return Math.max(visualRadius / (effectiveFraction * tanHalf), visualRadius * 1.15);
     }
 
     function focusObj(i: number) {
@@ -1246,7 +1290,7 @@ export default function App() {
 
       iExtrasRef.current!.innerHTML = '';
 
-      infoRef.current!.classList.add('open');
+      (window as any).__showInfoHint();
     }
 
     function showProbeInfo(i: number) {
@@ -1264,7 +1308,7 @@ export default function App() {
         <div><div class="info-stat-label">距离</div><div class="info-stat-val">${pr.dist ? pr.dist + ' AU' : '轨道中'}</div></div>
       `;
       iExtrasRef.current!.innerHTML = '';
-      infoRef.current!.classList.add('open');
+      (window as any).__showInfoHint();
     }
 
     (window as any).__focusProbeByIdx = (i: number) => {
@@ -1289,7 +1333,7 @@ export default function App() {
         g.innerHTML += `<div><div class="info-stat-label">${k}</div><div class="info-stat-val">${v}</div></div>`;
       });
       iExtrasRef.current!.innerHTML = '';
-      infoRef.current!.classList.add('open');
+      (window as any).__showInfoHint();
     }
 
     function showNaturalMoonInfo(d: any) {
@@ -1308,7 +1352,7 @@ export default function App() {
         g.innerHTML += `<div><div class="info-stat-label">${k}</div><div class="info-stat-val">${v}</div></div>`;
       });
       iExtrasRef.current!.innerHTML = '';
-      infoRef.current!.classList.add('open');
+      (window as any).__showInfoHint();
     }
 
     // Expose for nav sidebar clicks
@@ -1319,10 +1363,12 @@ export default function App() {
 
     (window as any).__closeInfo = () => {
       infoRef.current!.classList.remove('open');
+      (window as any).__hideInfoHint?.();
       // Keep focIdx / focSatIdx — camera stays locked on the last selected object
       navRef.current!.querySelectorAll('.nav-planet').forEach(d => d.classList.remove('active'));
       document.querySelectorAll('.nav-moons').forEach(mc => (mc as HTMLElement).style.display = 'none');
     };
+    (window as any).__hideInfoHint = () => { setInfoHint(false); };
 
     // ═══════ CONTROLS ═══════
     // Speed presets: each value = how many real seconds per animation second
@@ -1349,7 +1395,7 @@ export default function App() {
       { v: 15552000, label: '6月' },
       { v: 31557600, label: '1年' },
     ];
-    let spdIdx = 1; // default: 1分/秒
+    let spdIdx = 3; // default: 1分/秒 (index 3 after adding 15秒/30秒)
     let spd = SPEED_PRESETS[spdIdx].v;
     let paused = false;
     // Earth orbital rate: 2π / 31557600 rad/s at real-time
@@ -1365,14 +1411,29 @@ export default function App() {
       spd = SPEED_PRESETS[spdIdx].v;
       updSpd();
     };
-    (window as any).__togglePlay = () => { paused = !paused; playBtnRef.current!.textContent = paused ? '▶' : '⏸'; playBtnRef.current!.classList.toggle('on', !paused); };
+    (window as any).__togglePlay = () => {
+      paused = !paused;
+      playBtnRef.current!.innerHTML = paused
+        ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="5,3 19,12 5,21"/></svg>'
+        : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="4" x2="6" y2="20"/><line x1="18" y1="4" x2="18" y2="20"/></svg>';
+      playBtnRef.current!.classList.toggle('on', !paused);
+    };
     (window as any).__spdSlider = (v: string) => {
       spdIdx = Math.round(parseFloat(v) * (SPEED_PRESETS.length - 1));
       spd = SPEED_PRESETS[spdIdx].v;
       updSpd();
     };
     updSpd();
-    (window as any).__resetCam = () => { tA = { t: 0.3, p: Math.PI / 3 }; tD = 105; tT.set(0, 0, 0); (window as any).__closeInfo(); };
+    (window as any).__resetCam = () => {
+      tA = { t: 0.3, p: Math.PI / 3 }; tD = 105; tT.set(0, 0, 0);
+      focIdx = -1; focSatIdx = -1;
+      // Reset speed to default (1分/秒 = index 3)
+      spdIdx = 3; spd = SPEED_PRESETS[spdIdx].v; updSpd();
+      paused = false;
+      if (playBtnRef.current) playBtnRef.current.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="4" x2="6" y2="20"/><line x1="18" y1="4" x2="18" y2="20"/></svg>';
+      if (playBtnRef.current) playBtnRef.current.classList.add('on');
+      (window as any).__closeInfo();
+    };
     const layers = { sat: true, probe: false }; // probes hidden by default
     probeMeshes.forEach(m => m.visible = false);
     (window as any).__toggleL = (k: string) => {
@@ -1409,7 +1470,7 @@ export default function App() {
       // Show brackets when Earth > 1/1000 screen, hide when smaller
       const eIdx4 = P.findIndex(p => p.id === 'earth');
       const earthScreen = getScreenSize(meshes[eIdx4], camera, earthSceneR * earthScale);
-      const showBrackets = earthScreen > innerHeight / 1000;
+      const showBrackets = earthScreen > innerHeight / cfg.satLabelHideFrac;
 
       // Lazy-create bracket elements
       while (bracketEls.length < sd.meshes.length) {
@@ -1438,8 +1499,10 @@ export default function App() {
         // Brackets always shown when satellite is visible (no hide-on-zoom-in)
 
         el.style.display = 'block';
-        el.style.left = (x - 6) + 'px';
-        el.style.top = (y - 6) + 'px';
+        const bs = cfg.bracketSize;
+        el.style.width = bs + 'px'; el.style.height = bs + 'px';
+        el.style.left = (x - bs / 2) + 'px';
+        el.style.top = (y - bs / 2) + 'px';
         el.style.borderColor = sd.sats[i]?.color || '#fff';
       }
     }
@@ -1452,7 +1515,7 @@ export default function App() {
     }
 
     // (satSize removed — brackets always shown)
-    const MIN_SCREEN_FRAC = 1 / 5000; // hide objects + labels + orbits when smaller than 1/5000 of screen
+    // Visibility thresholds from cfg
 
     // Check if a world-space point is occluded by any visible planet (behind it from camera's view)
     function isOccludedByPlanet(worldPos: THREE.Vector3): boolean {
@@ -1480,7 +1543,7 @@ export default function App() {
 
     // ═══════ PLANET / MOON SELECTION HELPERS ═══════
     const helperContainer = helpersRef.current!;
-    const HELPER_SIZE = 18; // circle diameter in px
+    // Helper size reads from cfg each frame
     // Colors matching orbit tones for each planet
     const planetHelperColors: string[] = P.map(p => '#' + p.col.toString(16).padStart(6, '0'));
 
@@ -1583,7 +1646,7 @@ export default function App() {
         // Moons: hide when parent planet is too small (same rule as labels)
         if (h.type === 'moon' && h.parentIdx !== undefined) {
           const parentScreenSz = getScreenSize(meshes[h.parentIdx], cam, baseScale(h.parentIdx) * P[h.parentIdx].r);
-          if (parentScreenSz < innerHeight / 100) { h.el.style.display = 'none'; continue; }
+          if (parentScreenSz < innerHeight / cfg.moonLabelHideFrac) { h.el.style.display = 'none'; continue; }
         }
 
         // Only show helper when object is too small on screen (< 20px) but not sub-pixel
@@ -1591,7 +1654,7 @@ export default function App() {
         const screenSz = getScreenSize(mesh, cam, worldR);
         if (screenSz >= 20) { h.el.style.display = 'none'; continue; }
         // Hide when truly invisible (sub-pixel) — too zoomed out
-        if (h.type === 'planet' && screenSz < innerHeight / 5000) { h.el.style.display = 'none'; continue; }
+        if (h.type === 'planet' && screenSz < innerHeight / cfg.helperHideFrac) { h.el.style.display = 'none'; continue; }
         // Don't show if behind camera
         helperVec.setFromMatrixPosition(mesh.matrixWorld);
         if (isOccludedByPlanet(helperVec.clone())) { h.el.style.display = 'none'; continue; }
@@ -1601,8 +1664,9 @@ export default function App() {
         const x = (helperVec.x * .5 + .5) * innerWidth;
         const y = (helperVec.y * -.5 + .5) * innerHeight;
         h.el.style.display = 'block';
-        h.el.style.left = (x - HELPER_SIZE / 2) + 'px';
-        h.el.style.top = (y - HELPER_SIZE / 2) + 'px';
+        h.el.style.width = cfg.helperSize + 'px'; h.el.style.height = cfg.helperSize + 'px';
+        h.el.style.left = (x - cfg.helperSize / 2) + 'px';
+        h.el.style.top = (y - cfg.helperSize / 2) + 'px';
       }
     }
 
@@ -1674,7 +1738,7 @@ export default function App() {
         moonMesh.scale.setScalar(eScale);
         // Hide moon based on its own screen size
         const moonScreenSz = getScreenSize(moonMesh, cam, eScale * 0.27);
-        const moonTooSmall = moonScreenSz < innerHeight / 5000;
+        const moonTooSmall = moonScreenSz < innerHeight / cfg.helperHideFrac;
         moonMesh.visible = !moonTooSmall;
         if (moonOrbitLine) {
           moonOrbitLine.position.copy(earthPos);
@@ -1711,9 +1775,9 @@ export default function App() {
           naturalMoonOrbits[i].scale.setScalar(pScale);
           naturalMoonOrbits[i].visible = showOrbits && nm.visible;
         }
-        // Visibility: hide when screen size < innerHeight / 5000
+        // Visibility: hide when screen size < innerHeight / cfg.helperHideFrac
         const nmScreenSz = getScreenSize(nm, cam, pScale * nm.userData.visualR);
-        nm.visible = nmScreenSz >= innerHeight / 5000;
+        nm.visible = nmScreenSz >= innerHeight / cfg.helperHideFrac;
       });
 
       const tAngle = t * EARTH_RATE; // normalized orbital angle progress
@@ -1721,7 +1785,7 @@ export default function App() {
       const earthScreenForProbes = getScreenSize(meshes[P.findIndex(pp => pp.id === 'earth')], cam, baseScale(P.findIndex(pp => pp.id === 'earth')) * P.find(pp => pp.id === 'earth')!.r);
       PR.forEach((pr, i) => {
         const m = probeMeshes[i];
-        if (!layers.probe || earthScreenForProbes < innerHeight / 5000) { m.visible = false; return; }
+        if (!layers.probe || earthScreenForProbes < innerHeight / cfg.helperHideFrac) { m.visible = false; return; }
         m.visible = true;
         if (pr.orb !== undefined) {
           const pp = meshes[pr.orb].position;
@@ -1750,7 +1814,7 @@ export default function App() {
 
         // Hide all satellites + trails when Earth is too small on screen
         const earthScreenForSats = getScreenSize(meshes[eIdx], cam, earthSceneR * sc);
-        const hideAllSats = earthScreenForSats < innerHeight / 100;
+        const hideAllSats = earthScreenForSats < innerHeight / cfg.moonLabelHideFrac;
 
         for (let i = 0; i < sd.sats.length; i++) {
           const sm = sd.meshes[i];
@@ -1825,27 +1889,28 @@ export default function App() {
                 const pastEci = getSatPositionECI(sat, pastTime);
                 if (pastEci) {
                   const pp = eciToScene(pastEci, ep, earthSceneR, sc);
-                  satTrails[i][s * 3] = pp.x + Math.sin(seed) * jit;
-                  satTrails[i][s * 3 + 1] = pp.y + Math.cos(seed * 1.3) * jit;
-                  satTrails[i][s * 3 + 2] = pp.z + Math.sin(seed * 2.7) * jit;
+                  // Store relative to Earth center for float32 precision
+                  satTrails[i][s * 3] = pp.x - ep.x + Math.sin(seed) * jit;
+                  satTrails[i][s * 3 + 1] = pp.y - ep.y + Math.cos(seed * 1.3) * jit;
+                  satTrails[i][s * 3 + 2] = pp.z - ep.z + Math.sin(seed * 2.7) * jit;
                 } else { allValid = false; }
               }
-              // Snap last point to exact current position
-              satTrails[i][lastIdx * 3] = pos.x;
-              satTrails[i][lastIdx * 3 + 1] = pos.y;
-              satTrails[i][lastIdx * 3 + 2] = pos.z;
+              // Snap last point to exact current position (relative to Earth)
+              satTrails[i][lastIdx * 3] = pos.x - ep.x;
+              satTrails[i][lastIdx * 3 + 1] = pos.y - ep.y;
+              satTrails[i][lastIdx * 3 + 2] = pos.z - ep.z;
               if (allValid) satTrailReady[i] = true;
             } else {
-              // Between recomputations, only update the last point (smooth head tracking)
-              satTrails[i][lastIdx * 3] = pos.x;
-              satTrails[i][lastIdx * 3 + 1] = pos.y;
-              satTrails[i][lastIdx * 3 + 2] = pos.z;
+              // Between recomputations, only update the last point (relative to Earth)
+              satTrails[i][lastIdx * 3] = pos.x - ep.x;
+              satTrails[i][lastIdx * 3 + 1] = pos.y - ep.y;
+              satTrails[i][lastIdx * 3 + 2] = pos.z - ep.z;
             }
             const line = satTrailLines[i];
             if (line) {
-              // Only show trail after first full valid computation
-              // Hide trails at high time speed (> 1hr/s) — orbits are too fast for meaningful trails
               line.visible = satTrailReady[i] && spd <= 7200;
+              // Position trail at Earth center (vertices are relative to Earth)
+              line.position.copy(ep);
               line.geometry.attributes.position.needsUpdate = true;
               line.geometry.setDrawRange(0, TRAIL_LEN);
               const mat = line.material as THREE.ShaderMaterial;
@@ -2002,7 +2067,18 @@ export default function App() {
     };
     window.addEventListener('resize', onResize);
     setTimeout(() => introRef.current?.classList.add('gone'), 2200);
-    satCountRef.current!.textContent = '142 颗卫星追踪中';
+    // Preload Starlink count from cache and update status with full count
+    fetch(BASE + 'data/satellites-cache.json').then(r => r.ok ? r.json() : null).then(c => {
+      if (c?.groups?.starlink) {
+        const slTotal = c.groups.starlink.length;
+        setStarlinkTotal(slTotal);
+        if (satCountRef.current) {
+          const nonSl = satDataRef.current.sats.length || 142;
+          satCountRef.current.textContent = `${nonSl + slTotal} 颗卫星追踪中`;
+        }
+      }
+    }).catch(() => {});
+    if (satCountRef.current) satCountRef.current.textContent = '— 颗卫星追踪中';
     // Default: focus on Earth after intro
     const earthStartIdx = P.findIndex(p => p.id === 'earth');
     setTimeout(() => { if (earthStartIdx >= 0) focusObj(earthStartIdx); }, 2400);
@@ -2027,12 +2103,22 @@ export default function App() {
           <div className="brand-cn">此刻太空</div>
         </div>
         <div className="layers">
-          <button className={`layer-btn ${satListOpen ? 'on' : ''}`} ref={lSatRef} onClick={() => setSatListOpen(v => !v)}><span className="layer-dot" />卫星</button>
-          <button className="layer-btn" onClick={() => setMobileSettingsOpen(v => !v)}>设置</button>
+          <button className="layer-btn mobile-only" onClick={() => { closeAllPanels('mobileNav'); setMobileNavOpen(v => !v); }}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>星体</button>
+          <button className={`layer-btn ${satListOpen ? 'on' : ''}`} ref={lSatRef} onClick={() => { if (!satListOpen) closeAllPanels('sat'); setSatListOpen(v => !v); }}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49M7.76 16.24a6 6 0 0 1 0-8.49"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 19.07a10 10 0 0 1 0-14.14"/></svg>卫星</button>
+          <button className="layer-btn" onClick={() => { if (!mobileSettingsOpen) closeAllPanels('mobileSettings'); setMobileSettingsOpen(v => !v); }}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>设置</button>
         </div>
       </div>
 
       <div className="nav" ref={navRef} />
+
+      {/* Info hint icon — appears when an object is selected, click to open details */}
+      {infoHint && (
+        <button className="info-hint" onClick={() => (window as any).__openInfo()}>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>
+          </svg>
+        </button>
+      )}
 
       <div className="info" ref={infoRef}>
         <div className="info-drag" onPointerDown={(e) => {
@@ -2064,7 +2150,7 @@ export default function App() {
           const el = infoRef.current!;
           el.style.left = ''; el.style.top = ''; el.style.right = ''; el.style.transform = '';
           (window as any).__closeInfo();
-        }}>✕</button>
+        }}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
         <div ref={iNameRef} className="info-name" />
         <div ref={iSubRef} className="info-sub" />
         <div ref={iGridRef} className="info-grid" />
@@ -2075,24 +2161,26 @@ export default function App() {
       </div>
 
       <div className="timebar">
-        <button className="tb" onClick={() => (window as any).__changeSpd(-1)}>⏪</button>
-        <button className="tb on" ref={playBtnRef} onClick={() => (window as any).__togglePlay()}>⏸</button>
-        <button className="tb" onClick={() => (window as any).__changeSpd(1)}>⏩</button>
+        <button className="tb" onClick={() => (window as any).__changeSpd(-1)}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="11,19 2,12 11,5"/><polygon points="22,19 13,12 22,5"/></svg></button>
+        <button className="tb on" ref={playBtnRef} onClick={() => (window as any).__togglePlay()}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="6" y1="4" x2="6" y2="20"/><line x1="18" y1="4" x2="18" y2="20"/></svg></button>
+        <button className="tb" onClick={() => (window as any).__changeSpd(1)}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="13,19 22,12 13,5"/><polygon points="2,19 11,12 2,5"/></svg></button>
         <input type="range" className="tslider" ref={tSliderRef} min="0" max="1" step="0.01" defaultValue="0.06" onInput={e => (window as any).__spdSlider((e.target as HTMLInputElement).value)} />
         <div className="tspeed" ref={spdTxtRef}>1×</div>
-        <button className="tb" onClick={() => (window as any).__resetCam()}>⟳</button>
+        <button className="tb" onClick={() => (window as any).__resetCam()}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg></button>
       </div>
 
-      <div className="status">
-        <div className="status-line"><span className="status-dot" style={{ background: 'var(--glow)' }} /><span ref={satCountRef}>— 颗卫星追踪中</span></div>
-        <div className="status-line"><span className="status-dot" style={{ background: 'var(--warm)' }} /><span>{PROBES.length} 个深空探测器</span></div>
-      </div>
+      {showStatus && (
+        <div className="status">
+          <div className="status-line"><span className="status-dot" style={{ background: 'var(--glow)' }} /><span ref={satCountRef}>{satellites.length + (starlinkTotal || 0)} 颗卫星追踪中</span></div>
+          <div className="status-line"><span className="status-dot" style={{ background: 'var(--warm)' }} /><span>{PROBES.length} 个深空探测器</span></div>
+        </div>
+      )}
 
       {/* Satellite List Panel */}
       {satListOpen && (
         <div className="sat-panel" id="__satPanel">
           <button className="info-close" style={{ position: 'absolute', top: 10, right: 10, zIndex: 10 }}
-            onClick={() => setSatListOpen(false)}>✕</button>
+            onClick={() => setSatListOpen(false)}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
           <div className="sat-panel-drag" onPointerDown={(e) => {
             e.preventDefault();
             const el = document.getElementById('__satPanel')!;
@@ -2110,7 +2198,7 @@ export default function App() {
               {['beidou', 'probes', 'stations', 'starlink', 'gps', 'visual'].map(tid => {
                 if (tid === 'probes') return (
                   <button key="probes" className={`sat-tab ${satTab === 'probes' ? 'active' : ''}`} onClick={() => setSatTab('probes')}>
-                    <span className="sat-tab-row"><span className="sat-tab-dot" style={{ background: 'linear-gradient(135deg, #81C784, #CE93D8, #FFB74D)' }} />探测器</span>
+                    <span className="sat-tab-row"><span className={`sat-tab-dot ${probesVisible ? '' : 'off'}`} style={{ background: 'linear-gradient(135deg, #81C784, #CE93D8, #FFB74D)' }} />探测器</span>
                     <span className="sat-tab-count">数量：{PROBES.length}</span>
                   </button>
                 );
@@ -2118,8 +2206,8 @@ export default function App() {
                 if (!g) return null;
                 return (
                   <button key={g.id} className={`sat-tab ${satTab === g.id ? 'active' : ''}`} onClick={() => setSatTab(g.id)}>
-                    <span className="sat-tab-row"><span className="sat-tab-dot" style={{ background: g.color }} />{g.labelCn}</span>
-                    <span className="sat-tab-count">数量：{satellites.filter(s => s.groupId === g.id).length}</span>
+                    <span className="sat-tab-row"><span className={`sat-tab-dot ${satGroups[g.id] ? '' : 'off'}`} style={{ background: g.color }} />{g.labelCn}</span>
+                    <span className="sat-tab-count">数量：{g.id === 'starlink' ? (starlinkTotal || satellites.filter(s => s.groupId === g.id).length) : satellites.filter(s => s.groupId === g.id).length}</span>
                   </button>
                 );
               })}
@@ -2154,7 +2242,7 @@ export default function App() {
                   beidou: '中国北斗导航系统。MEO/GEO轨道，高度21,500-35,786km。',
                   stations: 'ISS、中国空间站等载人航天器。LEO约400km。',
                   gps: '美国GPS导航系统。MEO约20,200km，31颗在轨。',
-                  starlink: 'SpaceX星链互联网卫星。LEO约550km，在轨6000+颗。首次启用时加载全部数据。',
+                  starlink: `SpaceX星链互联网卫星，LEO约550km。CelesTrak收录约${starlinkTotal || '10,000'}颗，启用后自动过滤退役和调轨中的卫星，仅展示在300-800km轨道正常运行的卫星。`,
                   visual: '地面肉眼可见的明亮卫星。多在LEO 200-2000km。',
                 };
                 const refs: Record<string, string> = {
@@ -2196,7 +2284,7 @@ export default function App() {
                           <span className="sat-name" title="">{getSatDisplayName(s.name, s.noradId)}</span>
                         </div>
                       );
-                    }) : (g.id === 'starlink' && !starlinkLoading ? <div className="sat-loading" style={{ fontSize: 10 }}>启用后加载6000+颗卫星</div> : <div className="sat-loading">加载中...</div>)}
+                    }) : (g.id === 'starlink' && !starlinkLoading ? <div className="sat-loading" style={{ fontSize: 10 }}>启用后加载全部正常运行的卫星</div> : <div className="sat-loading">加载中...</div>)}
                   </div>
                 </>);
               })()}
@@ -2213,40 +2301,139 @@ export default function App() {
       {/* Mobile nav panel — slide from left */}
       <div className={`mobile-nav-panel ${mobileNavOpen ? 'open' : ''}`}>
         <div className="mobile-section-title">太阳系</div>
-        {PLANETS.map((p, i) => (
-          <div key={p.id} className="mobile-toggle" onClick={() => { (window as any).__focusPlanetByIdx?.(i); setMobileNavOpen(false); }}>
-            <span style={{ width: 8, height: 8, borderRadius: '50%', background: p.color, flexShrink: 0 }} />
-            <span>{p.nameCn.split('—')[0].trim()}</span>
-          </div>
-        ))}
+        {PLANETS.map((p, i) => {
+          const moons = NATURAL_MOONS.filter(nm => nm.parentId === p.id);
+          const totalKnown = MOON_COUNTS[p.id] ?? 0;
+          return (
+            <div key={p.id}>
+              <div className="mobile-toggle" onClick={() => { (window as any).__focusPlanetByIdx?.(i); setMobileNavOpen(false); }}>
+                <span style={{ width: 8, height: 8, borderRadius: '50%', background: p.color, flexShrink: 0 }} />
+                <span>{p.nameCn.split('—')[0].trim()}</span>
+                {totalKnown > 0 && <span style={{ fontSize: 9, color: 'var(--text-dim)', marginLeft: 'auto' }}>{totalKnown}天然卫星</span>}
+              </div>
+              {moons.length > 0 && (
+                <div style={{ paddingLeft: 20, paddingBottom: 4 }}>
+                  {p.id === 'earth' && (
+                    <div className="mobile-toggle" style={{ padding: '4px 0', fontSize: 11 }} onClick={() => { (window as any).__focusNaturalMoon?.('moon'); setMobileNavOpen(false); }}>
+                      <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#aaa', flexShrink: 0 }} />
+                      <span>月球</span>
+                    </div>
+                  )}
+                  {moons.filter(nm => nm.id !== 'moon').map(nm => (
+                    <div key={nm.id} className="mobile-toggle" style={{ padding: '4px 0', fontSize: 11 }} onClick={() => { (window as any).__focusNaturalMoon?.(nm.id); setMobileNavOpen(false); }}>
+                      <span style={{ width: 6, height: 6, borderRadius: '50%', background: nm.color, flexShrink: 0 }} />
+                      <span>{nm.nameCn}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
       <div className={`mobile-nav-backdrop ${mobileNavOpen ? 'open' : ''}`} onClick={() => setMobileNavOpen(false)} />
 
-      {/* Mobile settings panel — slide from right */}
-      <div className={`mobile-settings ${mobileSettingsOpen ? 'open' : ''}`}>
-        <div className="mobile-section-title">显示设置</div>
-        <label className="mobile-toggle"><input type="checkbox" defaultChecked onChange={() => (window as any).__toggleLabels()} /><span>名称标签</span></label>
-        <label className="mobile-toggle"><input type="checkbox" defaultChecked onChange={() => (window as any).__toggleOrbits()} /><span>轨道线</span></label>
-        <label className="mobile-toggle"><input type="checkbox" defaultChecked id="__helperBtn" onChange={() => (window as any).__toggleHelpers()} /><span>选择辅助框</span></label>
-        <div className="mobile-section-title">音效</div>
-        <label className="mobile-toggle"><input type="checkbox" defaultChecked onChange={() => (window as any).__toggleSound()} /><span>开启音效</span></label>
-        <div style={{ padding: '4px 0', fontSize: 11, color: '#5B6478' }}>
-          音量: <input type="range" min="0" max="1" step="0.05" defaultValue="0.15" onChange={e => (window as any).__setVolume(parseFloat(e.target.value))} style={{ width: 100, verticalAlign: 'middle' }} />
-        </div>
-        {TRACKS_LIST.map((tr, i) => (
-          <div key={i} className="mobile-toggle" style={{ cursor: 'pointer', fontSize: 12 }} onClick={() => (window as any).__setTrack(i)}>
-            <span style={{ color: '#5EEAD4', fontSize: 10 }}>♪</span>
-            <span>{tr.name}</span>
+      {/* Settings panel — same style as satellite panel */}
+      {mobileSettingsOpen && (
+        <div className="sat-panel" id="__settingsPanel" style={{ left: 'auto', right: 70, top: 70 }}>
+          <button className="info-close" style={{ position: 'absolute', top: 10, right: 10, zIndex: 10 }}
+            onClick={() => setMobileSettingsOpen(false)}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+          <div className="sat-panel-drag" onPointerDown={(e) => {
+            e.preventDefault();
+            const el = document.getElementById('__settingsPanel')!;
+            const rect = el.getBoundingClientRect();
+            const ox = e.clientX - rect.left, oy = e.clientY - rect.top;
+            el.style.transition = 'none';
+            el.style.left = rect.left + 'px'; el.style.top = rect.top + 'px'; el.style.right = 'auto';
+            const onMove = (ev: PointerEvent) => { el.style.left = (ev.clientX - ox) + 'px'; el.style.top = (ev.clientY - oy) + 'px'; };
+            const onUp = () => { el.style.transition = ''; window.removeEventListener('pointermove', onMove); window.removeEventListener('pointerup', onUp); };
+            window.addEventListener('pointermove', onMove); window.addEventListener('pointerup', onUp);
+          }} />
+          <div className="sat-layout">
+            <div className="sat-sidebar">
+              <div className="sat-col-title">设置</div>
+              {[
+                { id: 'display', label: '显示' },
+                { id: 'orbits', label: '轨道' },
+                { id: 'helpers', label: '辅助框' },
+                { id: 'visibility', label: '可见性' },
+                { id: 'audio', label: '音效' },
+              ].map(t => (
+                <button key={t.id} className={`sat-tab ${settingsTab === t.id ? 'active' : ''}`} onClick={() => setSettingsTab(t.id)}>
+                  <span className="sat-tab-row">{t.label}</span>
+                </button>
+              ))}
+            </div>
+            <div className="sat-content">
+              <div className="sat-col-title">详情</div>
+              {settingsTab === 'display' && (<>
+                <div className="sat-content-header">
+                  <div className="sat-content-title">显示开关</div>
+                  <div className="sat-content-sub">控制各类标注和辅助元素的显示</div>
+                </div>
+                <div className="sat-content-divider" />
+                <label className="mobile-toggle"><input type="checkbox" defaultChecked onChange={() => (window as any).__toggleLabels()} /><span>名称标签</span></label>
+                <label className="mobile-toggle"><input type="checkbox" defaultChecked onChange={() => (window as any).__toggleOrbits()} /><span>轨道线</span></label>
+                <label className="mobile-toggle"><input type="checkbox" defaultChecked id="__helperBtn" onChange={() => (window as any).__toggleHelpers()} /><span>选择辅助框</span></label>
+                <label className="mobile-toggle"><input type="checkbox" checked={showStatus} onChange={() => setShowStatus(v => !v)} /><span>状态信息栏</span></label>
+              </>)}
+              {settingsTab === 'orbits' && (<>
+                <div className="sat-content-header">
+                  <div className="sat-content-title">轨道线设置</div>
+                  <div className="sat-content-sub">调整轨道线和卫星轨迹的显示参数</div>
+                </div>
+                <div className="sat-content-divider" />
+                <div className="settings-row"><span>行星轨道线宽</span><input type="range" min="0.5" max="4" step="0.1" defaultValue="1.5" onChange={e => { (window as any).__cfg.planetOrbitWidth = parseFloat(e.target.value); (window as any).__updateOrbitWidth?.(parseFloat(e.target.value)); }} /></div>
+                <div className="settings-row"><span>卫星轨道透明度</span><input type="range" min="0" max="0.5" step="0.01" defaultValue="0.15" onChange={e => { (window as any).__updateSatOrbitOpacity?.(parseFloat(e.target.value)); }} /></div>
+                <div className="settings-row"><span>卫星轨迹透明度</span><input type="range" min="0" max="1" step="0.05" defaultValue="0.5" onChange={e => { (window as any).__updateSatTrailOpacity?.(parseFloat(e.target.value)); }} /></div>
+              </>)}
+              {settingsTab === 'helpers' && (<>
+                <div className="sat-content-header">
+                  <div className="sat-content-title">辅助框设置</div>
+                  <div className="sat-content-sub">调整选择辅助框和卫星标记的尺寸</div>
+                </div>
+                <div className="sat-content-divider" />
+                <div className="settings-row"><span>行星辅助框</span><input type="range" min="10" max="36" step="1" defaultValue="18" onChange={e => { (window as any).__cfg.helperSize = parseInt(e.target.value); }} /></div>
+                <div className="settings-row"><span>卫星标记</span><input type="range" min="6" max="24" step="1" defaultValue="12" onChange={e => { (window as any).__cfg.bracketSize = parseInt(e.target.value); }} /></div>
+              </>)}
+              {settingsTab === 'visibility' && (<>
+                <div className="sat-content-header">
+                  <div className="sat-content-title">可见性阈值</div>
+                  <div className="sat-content-sub">控制元素缩放时的显示/消失条件（值越大越早消失）</div>
+                </div>
+                <div className="sat-content-divider" />
+                <div className="settings-row"><span>标签消失</span><input type="range" min="500" max="20000" step="500" defaultValue="5000" onChange={e => { (window as any).__cfg.labelHideFrac = parseInt(e.target.value); }} /></div>
+                <div className="settings-row"><span>卫星标签</span><input type="range" min="100" max="5000" step="100" defaultValue="1000" onChange={e => { (window as any).__cfg.satLabelHideFrac = parseInt(e.target.value); }} /></div>
+                <div className="settings-row"><span>天然卫星</span><input type="range" min="10" max="500" step="10" defaultValue="100" onChange={e => { (window as any).__cfg.moonLabelHideFrac = parseInt(e.target.value); }} /></div>
+                <div className="settings-row"><span>辅助框</span><input type="range" min="500" max="20000" step="500" defaultValue="5000" onChange={e => { (window as any).__cfg.helperHideFrac = parseInt(e.target.value); }} /></div>
+                <div className="settings-row"><span>卫星框</span><input type="range" min="100" max="5000" step="100" defaultValue="1000" onChange={e => { (window as any).__cfg.satBracketHideFrac = parseInt(e.target.value); }} /></div>
+              </>)}
+              {settingsTab === 'audio' && (<>
+                <div className="sat-content-header">
+                  <div className="sat-content-title">音效设置</div>
+                  <div className="sat-content-sub">控制背景音乐和音量</div>
+                </div>
+                <div className="sat-content-divider" />
+                <label className="mobile-toggle"><input type="checkbox" onChange={() => (window as any).__toggleSound()} /><span>开启音效</span></label>
+                <div className="settings-row"><span>音量</span><input type="range" min="0" max="1" step="0.05" defaultValue="0.15" onChange={e => (window as any).__setVolume(parseFloat(e.target.value))} /></div>
+                <div className="sat-content-divider" />
+                <div style={{ fontSize: 9, color: 'var(--text-dim)', marginBottom: 4 }}>曲目</div>
+                {TRACKS_LIST.map((tr, i) => (
+                  <div key={i} className="sat-item" style={{ cursor: 'pointer' }} onClick={() => (window as any).__setTrack(i)}>
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="var(--glow)" strokeWidth="2"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+                    <span className="sat-name">{tr.name}</span>
+                  </div>
+                ))}
+              </>)}
+            </div>
           </div>
-        ))}
-        <div className="mobile-section-title">卫星</div>
-      </div>
-      <div className={`mobile-nav-backdrop ${mobileSettingsOpen ? 'open' : ''}`} onClick={() => setMobileSettingsOpen(false)} />
+        </div>
+      )}
 
       {/* Toast popup */}
       <div className={`toast ${toast ? 'show' : ''}`}>
         {toast && <>
-          <button className="toast-close" onClick={() => setToast(null)}>✕</button>
+          <button className="toast-close" onClick={() => setToast(null)}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
           <div className="toast-title">{toast.title}</div>
           <div>{toast.text}</div>
         </>}

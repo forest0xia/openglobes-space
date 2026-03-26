@@ -166,6 +166,7 @@ async function fetchGroupLive(group: SatGroup): Promise<any[]> {
 export async function fetchAllSatellites(): Promise<SatRecord[]> {
   const cache = await loadCache();
   const results: SatRecord[] = [];
+  const seenNoradIds = new Set<number>(); // dedup across groups
 
   for (const group of SAT_GROUPS) {
     if (group.id === 'starlink') continue; // loaded separately
@@ -182,7 +183,12 @@ export async function fetchAllSatellites(): Promise<SatRecord[]> {
     }
 
     const groupColor = group.color;
-    results.push(...parseOMMArray(data, group.id, groupColor));
+    const parsed = parseOMMArray(data, group.id, groupColor);
+    for (const sat of parsed) {
+      if (sat.noradId && seenNoradIds.has(sat.noradId)) continue; // skip duplicate
+      if (sat.noradId) seenNoradIds.add(sat.noradId);
+      results.push(sat);
+    }
   }
 
   return results;
