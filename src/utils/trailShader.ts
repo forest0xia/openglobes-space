@@ -17,10 +17,11 @@ const vertexShader = /* glsl */ `
 
 const fragmentShader = /* glsl */ `
   uniform vec3 trailColor;
+  uniform float opacity;
   varying float vAlpha;
 
   void main() {
-    gl_FragColor = vec4(trailColor, vAlpha * 0.6);
+    gl_FragColor = vec4(trailColor, vAlpha * opacity);
   }
 `;
 
@@ -35,6 +36,7 @@ export function createTrailMaterial(color: string | number): THREE.ShaderMateria
     uniforms: {
       trailColor: { value: new THREE.Vector3(c.r, c.g, c.b) },
       activePoints: { value: 0.0 },
+      opacity: { value: 0.6 },
     },
     vertexShader,
     fragmentShader,

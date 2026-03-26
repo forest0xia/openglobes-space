@@ -13,7 +13,7 @@ import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
 import { LineGeometry } from 'three/examples/jsm/lines/LineGeometry.js';
 
 const h2n = (h: string) => parseInt(h.replace('#', ''), 16);
-// Darken a hex color by a factor (simulates opacity against black background)
+// Darken a hex color by a factor (simulates opacity against black background, avoids Line2 transparency artifacts)
 const darkenHex = (hex: number, f: number) => {
   const r = ((hex >> 16) & 0xff) * f;
   const g = ((hex >> 8) & 0xff) * f;
@@ -134,14 +134,20 @@ export default function App() {
     // Tunable settings — exposed on window for UI sliders
     const cfg = (window as any).__cfg = {
       planetOrbitWidth: 1.5,   // px
-      satTrailWidth: 1,        // px (LineBasicMaterial — always 1 on most GPUs)
+      planetOrbitOpacity: 0.45, // planet orbit line opacity
+      moonOrbitOpacity: 0.45,  // natural moon orbit line opacity (same as planet orbits)
+      moonOrbitWidth: 1,       // natural moon orbit line width (px)
+      satOrbitOpacity: 0.15,   // satellite orbit line opacity
+      satTrailOpacity: 0.6,    // satellite trail opacity
       helperSize: 18,          // px
       bracketSize: 12,         // px
       labelHideFrac: 5000,     // labels hidden when object < innerHeight/this
-      satLabelHideFrac: 1000,  // sat labels hidden when Earth < innerHeight/this
-      moonLabelHideFrac: 100,  // moon labels hidden when parent < innerHeight/this
-      helperHideFrac: 5000,    // planet helpers hidden when < innerHeight/this
-      satBracketHideFrac: 1000, // sat brackets hidden when Earth < innerHeight/this
+      satLabelHideFrac: 100,   // smaller = sat stuff disappears sooner
+      moonLabelHideFrac: 2000, // larger = moons stay visible longer
+      helperHideFrac: 5000,
+      satBracketHideFrac: 100,
+      planetOrbitHideDist: 800,
+      moonOrbitHideDist: 300,
     };
     const scene = new THREE.Scene();
     const cam = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, .1, 2000);
@@ -291,7 +297,7 @@ export default function App() {
     // (glow outlines removed)
     let earthCloudMesh: THREE.Mesh | null = null;
     let moonMesh: THREE.Mesh | null = null;
-    let moonOrbitLine: THREE.Line | null = null;
+    let moonOrbitLine: THREE.Line | Line2 | null = null;
     // earthAtmoMesh removed — cloud layer is sufficient
 
     P.forEach((p, i) => {
@@ -450,7 +456,7 @@ export default function App() {
         addAtmosphere(m, { scale: 1.15, dayColor: [1, .85, .3], twilightColor: [1, .4, .1],
           fresnelLow: 0.5, fresnelPow: 2.0, sunFadeMin: -1, sunFadeMax: 1, isSun: true });
       } else if (p.id === 'earth') {
-        addAtmosphere(m, { scale: 1.03, dayColor: [.3, .7, 1], twilightColor: [.74, .29, .04],
+        addAtmosphere(m, { scale: 1.04, dayColor: [.3, .7, 1], twilightColor: [.74, .29, .04],
           fresnelLow: 0.73, fresnelPow: 3.0, sunFadeMin: -0.5, sunFadeMax: 1.0 });
         addSurfaceAtmo(m, [.3, .7, 1], [.74, .29, .04], 0.7);
       } else if (p.id === 'venus') {
@@ -515,15 +521,20 @@ export default function App() {
         }, undefined, () => {});
 
         // Moon orbit line (circle around Earth, updated in animation loop)
-        const moonOrbitGeo = new THREE.BufferGeometry();
         const moonOrbitPts: number[] = [];
         for (let j = 0; j <= 128; j++) {
           const angle = (j / 128) * Math.PI * 2;
           moonOrbitPts.push(Math.cos(angle) * 60.3, 0, Math.sin(angle) * 60.3);
         }
-        moonOrbitGeo.setAttribute('position', new THREE.Float32BufferAttribute(moonOrbitPts, 3));
-        moonOrbitLine = new THREE.Line(moonOrbitGeo, new THREE.LineBasicMaterial({ color: 0x888888, transparent: true, opacity: 0.25 }));
-        scene.add(moonOrbitLine);
+        const moonOrbitLg = new LineGeometry();
+        moonOrbitLg.setPositions(moonOrbitPts);
+        moonOrbitLine = new Line2(moonOrbitLg, new LineMaterial({
+          color: darkenHex(0x888888, cfg.moonOrbitOpacity),
+          linewidth: cfg.moonOrbitWidth,
+          resolution: new THREE.Vector2(innerWidth, innerHeight),
+        })) as any;
+        (moonOrbitLine as any).userData.baseColor = 0x888888;
+        scene.add(moonOrbitLine!);
       }
 
       if (p.ring) {
@@ -559,7 +570,7 @@ export default function App() {
         const lg = new LineGeometry();
         lg.setPositions(op);
         const lm = new LineMaterial({
-          color: darkenHex(p.col, 0.45),
+          color: darkenHex(p.col, cfg.planetOrbitOpacity),
           linewidth: cfg.planetOrbitWidth,
           resolution: new THREE.Vector2(innerWidth, innerHeight),
         });
@@ -665,7 +676,7 @@ export default function App() {
     // ═══════ NATURAL MOONS (all except Earth's Moon) ═══════
     const naturalMoonMeshes: THREE.Mesh[] = [];
     const naturalMoonData: typeof NATURAL_MOONS = [];
-    const naturalMoonOrbits: THREE.Line[] = [];
+    const naturalMoonOrbits: (THREE.Line | Line2)[] = [];
     NATURAL_MOONS.forEach(nm => {
       if (nm.id === 'moon') return; // Earth's Moon is already created with special handling
       const parentIdx = P.findIndex(p => p.id === nm.parentId);
@@ -702,17 +713,21 @@ export default function App() {
       if (parentPlanet) {
         const distR2 = nm.distanceKm / parentPlanet.realRadiusKm;
         const orbitR2 = distR2 * parentP.r;
-        const nmOrbitGeo = new THREE.BufferGeometry();
         const nmOrbitPts: number[] = [];
         for (let a = 0; a <= 64; a++) {
           const ang = (a / 64) * Math.PI * 2;
           nmOrbitPts.push(Math.cos(ang) * orbitR2, 0, Math.sin(ang) * orbitR2);
         }
-        nmOrbitGeo.setAttribute('position', new THREE.Float32BufferAttribute(nmOrbitPts, 3));
-        const nmOrbitLine = new THREE.Line(nmOrbitGeo, new THREE.LineBasicMaterial({
-          color: parseInt(nm.color.replace('#', ''), 16), transparent: true, opacity: 0.2
-        }));
-        nmOrbitLine.userData = { parentIdx, isNaturalMoonOrbit: true };
+        const nmLg = new LineGeometry();
+        nmLg.setPositions(nmOrbitPts);
+        const nmCol = parseInt(nm.color.replace('#', ''), 16);
+        const nmOrbitMat = new LineMaterial({
+          color: darkenHex(nmCol, cfg.moonOrbitOpacity),
+          linewidth: cfg.moonOrbitWidth,
+          resolution: new THREE.Vector2(innerWidth, innerHeight),
+        });
+        const nmOrbitLine = new Line2(nmLg, nmOrbitMat);
+        nmOrbitLine.userData = { parentIdx, isNaturalMoonOrbit: true, baseColor: nmCol };
         scene.add(nmOrbitLine);
         naturalMoonOrbits.push(nmOrbitLine);
       }
@@ -734,14 +749,13 @@ export default function App() {
       orbitLines.forEach(ol => { ol.visible = showOrbits; });
       // Expose orbit updaters for settings panel
       (window as any).__updateOrbitWidth = (w: number) => {
-        orbitLines.forEach(ol => { if ((ol as any).material?.linewidth !== undefined) (ol as any).material.linewidth = w; });
+        orbitLines.forEach(ol => {
+          const m = (ol as any).material;
+          if (m?.uniforms?.linewidth) m.uniforms.linewidth.value = w;
+          if (m?.linewidth !== undefined) m.linewidth = w; // also set property for getter sync
+        });
       };
-      (window as any).__updateSatOrbitOpacity = (o: number) => {
-        satDataRef.current.orbitLines.forEach(ol => { if ((ol as any).material) (ol as any).material.opacity = o; });
-      };
-      (window as any).__updateSatTrailOpacity = (o: number) => {
-        satDataRef.current.trailLines.forEach(tl => { if ((tl as any).material?.uniforms?.opacity) (tl as any).material.uniforms.opacity.value = o; });
-      };
+      // Removed: sat orbit/trail opacity now synced from cfg every frame
       // Natural moon orbits
       naturalMoonOrbits.forEach(ol => { ol.visible = showOrbits; });
       // Moon orbit line
@@ -968,6 +982,8 @@ export default function App() {
           const dir = earthToSat.normalize();
           tA.t = Math.atan2(dir.x, dir.z);
           tA.p = Math.acos(Math.max(-0.99, Math.min(0.99, dir.y)));
+          // Snap camera angle immediately
+          cA.t = tA.t; cA.p = tA.p;
         }
       }
       const dn = getSatDisplayName(sat.name, sat.noradId);
@@ -1042,7 +1058,7 @@ export default function App() {
           if (parentScreenSz < innerHeight / cfg.moonLabelHideFrac) { el.style.display = 'none'; return; }
         }
         const objScreenSz = getScreenSize(mesh, cam, mesh.scale?.x || 1);
-        const threshold = type === 'sat' ? innerHeight / 2000 : innerHeight / cfg.labelHideFrac;
+        const threshold = type === 'sat' ? innerHeight / cfg.satLabelHideFrac : innerHeight / cfg.labelHideFrac;
         if (objScreenSz < threshold) { el.style.display = 'none'; return; }
         labelVec.setFromMatrixPosition(mesh.matrixWorld);
         // Occluded by a planet? Hide label
@@ -1472,7 +1488,7 @@ export default function App() {
       // Show brackets when Earth > 1/1000 screen, hide when smaller
       const eIdx4 = P.findIndex(p => p.id === 'earth');
       const earthScreen = getScreenSize(meshes[eIdx4], camera, earthSceneR * earthScale);
-      const showBrackets = earthScreen > innerHeight / cfg.satLabelHideFrac;
+      const showBrackets = earthScreen > innerHeight / cfg.satBracketHideFrac;
 
       // Lazy-create bracket elements
       while (bracketEls.length < sd.meshes.length) {
@@ -1640,8 +1656,12 @@ export default function App() {
       // Add any new natural moon helpers
       if (naturalMoonMeshes.length > 0) addNaturalMoonHelpers();
 
+      // Hide all planet/moon helpers when zoomed out past solar system scale
+      // When camera distance > Neptune's orbit (601), orbits are visually tiny
+      const allHelpersHidden = cD > 500;
+
       for (const h of helperEntries) {
-        if (!showHelpers) { h.el.style.display = 'none'; continue; }
+        if (!showHelpers || allHelpersHidden) { h.el.style.display = 'none'; continue; }
         const mesh = h.getMesh();
         if (!mesh) { h.el.style.display = 'none'; continue; }
 
@@ -1714,7 +1734,13 @@ export default function App() {
         meshes[i].rotation.y = t * selfRotRate;
 
         // Hide planet + its orbit if too small on screen
-        if (orbitLines[i - 1]) orbitLines[i - 1].visible = showOrbits;
+        if (orbitLines[i - 1]) {
+          orbitLines[i - 1].visible = showOrbits && cD < cfg.planetOrbitHideDist;
+          const olm = (orbitLines[i - 1] as any).material;
+          if (olm?.linewidth !== undefined) olm.linewidth = cfg.planetOrbitWidth;
+          // Use darkenHex to simulate opacity (avoids Line2 white dot artifact with transparent:true)
+          if (olm?.color) olm.color.setHex(darkenHex(p.col, cfg.planetOrbitOpacity));
+        }
       });
 
       // Cloud rotation: slight drift relative to Earth surface (wind)
@@ -1740,12 +1766,14 @@ export default function App() {
         moonMesh.scale.setScalar(eScale);
         // Hide moon based on its own screen size
         const moonScreenSz = getScreenSize(moonMesh, cam, eScale * 0.27);
-        const moonTooSmall = moonScreenSz < innerHeight / cfg.helperHideFrac;
+        const moonTooSmall = moonScreenSz < innerHeight / cfg.moonLabelHideFrac;
         moonMesh.visible = !moonTooSmall;
         if (moonOrbitLine) {
           moonOrbitLine.position.copy(earthPos);
           moonOrbitLine.scale.setScalar(eScale);
-          moonOrbitLine.visible = showOrbits && !moonTooSmall;
+          moonOrbitLine.visible = showOrbits && !moonTooSmall && cD < cfg.moonOrbitHideDist;
+          const moOlm = (moonOrbitLine as any).material;
+          if (moOlm) { moOlm.linewidth = cfg.moonOrbitWidth; moOlm.color.setHex(darkenHex(0x888888, cfg.moonOrbitOpacity)); }
         }
       }
 
@@ -1775,11 +1803,17 @@ export default function App() {
         if (naturalMoonOrbits[i]) {
           naturalMoonOrbits[i].position.copy(parentPos);
           naturalMoonOrbits[i].scale.setScalar(pScale);
-          naturalMoonOrbits[i].visible = showOrbits && nm.visible;
+          naturalMoonOrbits[i].visible = showOrbits && nm.visible && cD < cfg.moonOrbitHideDist;
+          const nmOlm = (naturalMoonOrbits[i] as any).material;
+          if (nmOlm) {
+            nmOlm.linewidth = cfg.moonOrbitWidth;
+            const bc = naturalMoonOrbits[i].userData.baseColor;
+            if (bc !== undefined) nmOlm.color.setHex(darkenHex(bc, cfg.moonOrbitOpacity));
+          }
         }
         // Visibility: hide when screen size < innerHeight / cfg.helperHideFrac
         const nmScreenSz = getScreenSize(nm, cam, pScale * nm.userData.visualR);
-        nm.visible = nmScreenSz >= innerHeight / cfg.helperHideFrac;
+        nm.visible = nmScreenSz >= innerHeight / cfg.moonLabelHideFrac;
       });
 
       const tAngle = t * EARTH_RATE; // normalized orbital angle progress
@@ -1816,7 +1850,7 @@ export default function App() {
 
         // Hide all satellites + trails when Earth is too small on screen
         const earthScreenForSats = getScreenSize(meshes[eIdx], cam, earthSceneR * sc);
-        const hideAllSats = earthScreenForSats < innerHeight / cfg.moonLabelHideFrac;
+        const hideAllSats = earthScreenForSats < innerHeight / cfg.satBracketHideFrac;
 
         for (let i = 0; i < sd.sats.length; i++) {
           const sm = sd.meshes[i];
@@ -1854,13 +1888,26 @@ export default function App() {
           }
           sm.visible = true;
 
-          // Jitter — larger for stations (LEO objects cluster), smaller for MEO/GEO
+          // Per-satellite jitter values (used for both position and trail)
           const isStation = sat.groupId === 'stations';
-          const jit = earthSceneR * sc * (isStation ? 0.12 : 0.03);
           const seed = i * 7919;
-          pos.x += Math.sin(seed) * jit;
-          pos.y += Math.cos(seed * 1.3) * jit;
-          pos.z += Math.sin(seed * 2.7) * jit;
+          const jitAmount = earthSceneR * sc * (isStation ? 0.1 : 0.03);
+          const radialJit = (Math.abs(Math.sin(seed)) * 0.8 + 0.2) * jitAmount;
+          const tanJit = jitAmount * 0.3;
+
+          // Jitter — spread satellites along radial direction (outward from Earth only)
+          // Radial direction from Earth center
+          const dxR = pos.x - ep.x, dyR = pos.y - ep.y, dzR = pos.z - ep.z;
+          const distR = Math.sqrt(dxR * dxR + dyR * dyR + dzR * dzR);
+          if (distR > 0.001) {
+            const nx = dxR / distR, ny = dyR / distR, nz = dzR / distR;
+            pos.x += nx * radialJit;
+            pos.y += ny * radialJit;
+            pos.z += nz * radialJit;
+            pos.x += Math.cos(seed * 2.7) * tanJit * ny;
+            pos.y += Math.sin(seed * 3.1) * tanJit * nz;
+            pos.z += Math.cos(seed * 1.3) * tanJit * nx;
+          }
           sm.position.set(pos.x, pos.y, pos.z);
 
           // Stations 3x bigger than regular sats
@@ -1891,10 +1938,18 @@ export default function App() {
                 const pastEci = getSatPositionECI(sat, pastTime);
                 if (pastEci) {
                   const pp = eciToScene(pastEci, ep, earthSceneR, sc);
-                  // Store relative to Earth center for float32 precision
-                  satTrails[i][s * 3] = pp.x - ep.x + Math.sin(seed) * jit;
-                  satTrails[i][s * 3 + 1] = pp.y - ep.y + Math.cos(seed * 1.3) * jit;
-                  satTrails[i][s * 3 + 2] = pp.z - ep.z + Math.sin(seed * 2.7) * jit;
+                  // Relative to Earth + same radial jitter as satellite position
+                  let rx = pp.x - ep.x, ry = pp.y - ep.y, rz = pp.z - ep.z;
+                  const rd = Math.sqrt(rx * rx + ry * ry + rz * rz);
+                  if (rd > 0.001) {
+                    const rnx = rx / rd, rny = ry / rd, rnz = rz / rd;
+                    rx += rnx * radialJit + Math.cos(seed * 2.7) * tanJit * rny;
+                    ry += rny * radialJit + Math.sin(seed * 3.1) * tanJit * rnz;
+                    rz += rnz * radialJit + Math.cos(seed * 1.3) * tanJit * rnx;
+                  }
+                  satTrails[i][s * 3] = rx;
+                  satTrails[i][s * 3 + 1] = ry;
+                  satTrails[i][s * 3 + 2] = rz;
                 } else { allValid = false; }
               }
               // Snap last point to exact current position (relative to Earth)
@@ -1917,6 +1972,7 @@ export default function App() {
               line.geometry.setDrawRange(0, TRAIL_LEN);
               const mat = line.material as THREE.ShaderMaterial;
               if (mat.uniforms?.activePoints) mat.uniforms.activePoints.value = TRAIL_LEN;
+              if (mat.uniforms?.opacity) mat.uniforms.opacity.value = cfg.satTrailOpacity;
             }
           }
         }
@@ -1957,11 +2013,15 @@ export default function App() {
         const eIdx3 = P.findIndex(p => p.id === 'earth');
         const ep2 = meshes[eIdx3].position;
         const sc2 = baseScale(eIdx3);
-        sd.orbitLines.forEach(ol => { if (ol.visible) { ol.position.copy(ep2); ol.scale.setScalar(sc2); } });
+        sd.orbitLines.forEach(ol => {
+          if (ol.visible) { ol.position.copy(ep2); ol.scale.setScalar(sc2); }
+          const olm = (ol as any).material;
+          if (olm) olm.opacity = cfg.satOrbitOpacity;
+        });
       }
 
       if (focIdx >= 0) tT.copy(meshes[focIdx].position);
-      // Follow focused satellite — track position + enlarge for visibility
+      // Follow focused satellite — track position, angle, and enlarge for visibility
       if (focSatIdx >= 0) {
         const fsm = satDataRef.current.meshes[focSatIdx];
         if (fsm) {
@@ -2116,6 +2176,8 @@ export default function App() {
     const onResize = () => {
       cam.aspect = innerWidth / innerHeight; cam.updateProjectionMatrix(); ren.setSize(innerWidth, innerHeight);
       orbitLines.forEach(ol => { if ((ol as any).material?.resolution) (ol as any).material.resolution.set(innerWidth, innerHeight); });
+      naturalMoonOrbits.forEach(ol => { if ((ol as any).material?.resolution) (ol as any).material.resolution.set(innerWidth, innerHeight); });
+      if (moonOrbitLine && (moonOrbitLine as any).material?.resolution) (moonOrbitLine as any).material.resolution.set(innerWidth, innerHeight);
     };
     window.addEventListener('resize', onResize);
     setTimeout(() => introRef.current?.classList.add('gone'), 2200);
@@ -2405,10 +2467,9 @@ export default function App() {
             <div className="sat-sidebar">
               <div className="sat-col-title">设置</div>
               {[
-                { id: 'display', label: '显示' },
-                { id: 'orbits', label: '轨道' },
-                { id: 'helpers', label: '辅助框' },
-                { id: 'visibility', label: '可见性' },
+                { id: 'planets', label: '行星系统' },
+                { id: 'sats', label: '人造卫星' },
+                { id: 'general', label: '通用' },
                 { id: 'audio', label: '音效' },
               ].map(t => (
                 <button key={t.id} className={`sat-tab ${settingsTab === t.id ? 'active' : ''}`} onClick={() => setSettingsTab(t.id)}>
@@ -2418,47 +2479,56 @@ export default function App() {
             </div>
             <div className="sat-content">
               <div className="sat-col-title">详情</div>
-              {settingsTab === 'display' && (<>
+
+              {settingsTab === 'planets' && (<>
                 <div className="sat-content-header">
-                  <div className="sat-content-title">显示开关</div>
-                  <div className="sat-content-sub">控制各类标注和辅助元素的显示</div>
+                  <div className="sat-content-title">行星与天然卫星</div>
+                  <div className="sat-content-sub">轨道线样式、辅助框、可见性</div>
+                </div>
+                <div className="sat-content-divider" />
+                <div style={{ fontSize: 10, color: 'var(--glow)', marginBottom: 4 }}>行星轨道</div>
+                <div className="settings-row"><span>线宽</span><input type="range" min="0.5" max="4" step="0.1" defaultValue="1.5" onChange={e => { (window as any).__cfg.planetOrbitWidth = parseFloat(e.target.value); }} /></div>
+                <div className="settings-row"><span>亮度</span><input type="range" min="0" max="1" step="0.05" defaultValue="0.45" onChange={e => { (window as any).__cfg.planetOrbitOpacity = parseFloat(e.target.value); }} /></div>
+                <div className="settings-row"><span>消失距离</span><input type="range" min="100" max="2000" step="50" defaultValue="800" onChange={e => { (window as any).__cfg.planetOrbitHideDist = parseInt(e.target.value); }} /></div>
+                <div className="sat-content-divider" />
+                <div style={{ fontSize: 10, color: 'var(--glow)', marginBottom: 4 }}>天然卫星轨道</div>
+                <div className="settings-row"><span>线宽</span><input type="range" min="0.5" max="3" step="0.1" defaultValue="1" onChange={e => { (window as any).__cfg.moonOrbitWidth = parseFloat(e.target.value); }} /></div>
+                <div className="settings-row"><span>亮度</span><input type="range" min="0" max="1" step="0.05" defaultValue="0.45" onChange={e => { (window as any).__cfg.moonOrbitOpacity = parseFloat(e.target.value); }} /></div>
+                <div className="settings-row"><span>消失距离</span><input type="range" min="50" max="500" step="10" defaultValue="300" onChange={e => { (window as any).__cfg.moonOrbitHideDist = parseInt(e.target.value); }} /></div>
+                <div className="sat-content-divider" />
+                <div style={{ fontSize: 10, color: 'var(--glow)', marginBottom: 4 }}>辅助框与可见性</div>
+                <div className="settings-row"><span>行星辅助框大小</span><input type="range" min="10" max="36" step="1" defaultValue="18" onChange={e => { (window as any).__cfg.helperSize = parseInt(e.target.value); }} /></div>
+                <div className="settings-row"><span>行星名称可见性</span><input type="range" min="500" max="20000" step="500" defaultValue="5000" onChange={e => { (window as any).__cfg.labelHideFrac = parseInt(e.target.value); }} /></div>
+                <div className="settings-row"><span>天然卫星可见性</span><input type="range" min="500" max="5000" step="100" defaultValue="2000" onChange={e => { (window as any).__cfg.moonLabelHideFrac = parseInt(e.target.value); }} /></div>
+                <div className="settings-row"><span>辅助框可见性</span><input type="range" min="500" max="20000" step="500" defaultValue="5000" onChange={e => { (window as any).__cfg.helperHideFrac = parseInt(e.target.value); }} /></div>
+              </>)}
+
+              {settingsTab === 'sats' && (<>
+                <div className="sat-content-header">
+                  <div className="sat-content-title">人造卫星</div>
+                  <div className="sat-content-sub">轨道线、轨迹、标记样式与可见性</div>
+                </div>
+                <div className="sat-content-divider" />
+                <div style={{ fontSize: 10, color: 'var(--glow)', marginBottom: 4 }}>轨道与轨迹</div>
+                <div className="settings-row"><span>轨道亮度</span><input type="range" min="0" max="0.5" step="0.01" defaultValue="0.15" onChange={e => { (window as any).__cfg.satOrbitOpacity = parseFloat(e.target.value); }} /></div>
+                <div className="settings-row"><span>轨迹亮度</span><input type="range" min="0" max="1" step="0.05" defaultValue="0.6" onChange={e => { (window as any).__cfg.satTrailOpacity = parseFloat(e.target.value); }} /></div>
+                <div className="sat-content-divider" />
+                <div style={{ fontSize: 10, color: 'var(--glow)', marginBottom: 4 }}>标记与可见性</div>
+                <div className="settings-row"><span>选择框大小</span><input type="range" min="6" max="24" step="1" defaultValue="12" onChange={e => { (window as any).__cfg.bracketSize = parseInt(e.target.value); }} /></div>
+                <div className="settings-row"><span>名称可见性</span><input type="range" min="50" max="2000" step="50" defaultValue="100" onChange={e => { (window as any).__cfg.satLabelHideFrac = parseInt(e.target.value); }} /></div>
+                <div className="settings-row"><span>选择框可见性</span><input type="range" min="50" max="2000" step="50" defaultValue="100" onChange={e => { (window as any).__cfg.satBracketHideFrac = parseInt(e.target.value); }} /></div>
+              </>)}
+
+              {settingsTab === 'general' && (<>
+                <div className="sat-content-header">
+                  <div className="sat-content-title">通用设置</div>
+                  <div className="sat-content-sub">全局显示开关</div>
                 </div>
                 <div className="sat-content-divider" />
                 <label className="mobile-toggle"><input type="checkbox" defaultChecked onChange={() => (window as any).__toggleLabels()} /><span>名称标签</span></label>
                 <label className="mobile-toggle"><input type="checkbox" defaultChecked onChange={() => (window as any).__toggleOrbits()} /><span>轨道线</span></label>
                 <label className="mobile-toggle"><input type="checkbox" defaultChecked id="__helperBtn" onChange={() => (window as any).__toggleHelpers()} /><span>选择辅助框</span></label>
                 <label className="mobile-toggle"><input type="checkbox" checked={showStatus} onChange={() => setShowStatus(v => !v)} /><span>状态信息栏</span></label>
-              </>)}
-              {settingsTab === 'orbits' && (<>
-                <div className="sat-content-header">
-                  <div className="sat-content-title">轨道线设置</div>
-                  <div className="sat-content-sub">调整轨道线和卫星轨迹的显示参数</div>
-                </div>
-                <div className="sat-content-divider" />
-                <div className="settings-row"><span>行星轨道线宽</span><input type="range" min="0.5" max="4" step="0.1" defaultValue="1.5" onChange={e => { (window as any).__cfg.planetOrbitWidth = parseFloat(e.target.value); (window as any).__updateOrbitWidth?.(parseFloat(e.target.value)); }} /></div>
-                <div className="settings-row"><span>卫星轨道透明度</span><input type="range" min="0" max="0.5" step="0.01" defaultValue="0.15" onChange={e => { (window as any).__updateSatOrbitOpacity?.(parseFloat(e.target.value)); }} /></div>
-                <div className="settings-row"><span>卫星轨迹透明度</span><input type="range" min="0" max="1" step="0.05" defaultValue="0.5" onChange={e => { (window as any).__updateSatTrailOpacity?.(parseFloat(e.target.value)); }} /></div>
-              </>)}
-              {settingsTab === 'helpers' && (<>
-                <div className="sat-content-header">
-                  <div className="sat-content-title">辅助框设置</div>
-                  <div className="sat-content-sub">调整选择辅助框和卫星标记的尺寸</div>
-                </div>
-                <div className="sat-content-divider" />
-                <div className="settings-row"><span>行星辅助框</span><input type="range" min="10" max="36" step="1" defaultValue="18" onChange={e => { (window as any).__cfg.helperSize = parseInt(e.target.value); }} /></div>
-                <div className="settings-row"><span>卫星标记</span><input type="range" min="6" max="24" step="1" defaultValue="12" onChange={e => { (window as any).__cfg.bracketSize = parseInt(e.target.value); }} /></div>
-              </>)}
-              {settingsTab === 'visibility' && (<>
-                <div className="sat-content-header">
-                  <div className="sat-content-title">可见性阈值</div>
-                  <div className="sat-content-sub">控制元素缩放时的显示/消失条件（值越大越早消失）</div>
-                </div>
-                <div className="sat-content-divider" />
-                <div className="settings-row"><span>标签消失</span><input type="range" min="500" max="20000" step="500" defaultValue="5000" onChange={e => { (window as any).__cfg.labelHideFrac = parseInt(e.target.value); }} /></div>
-                <div className="settings-row"><span>卫星标签</span><input type="range" min="100" max="5000" step="100" defaultValue="1000" onChange={e => { (window as any).__cfg.satLabelHideFrac = parseInt(e.target.value); }} /></div>
-                <div className="settings-row"><span>天然卫星</span><input type="range" min="10" max="500" step="10" defaultValue="100" onChange={e => { (window as any).__cfg.moonLabelHideFrac = parseInt(e.target.value); }} /></div>
-                <div className="settings-row"><span>辅助框</span><input type="range" min="500" max="20000" step="500" defaultValue="5000" onChange={e => { (window as any).__cfg.helperHideFrac = parseInt(e.target.value); }} /></div>
-                <div className="settings-row"><span>卫星框</span><input type="range" min="100" max="5000" step="100" defaultValue="1000" onChange={e => { (window as any).__cfg.satBracketHideFrac = parseInt(e.target.value); }} /></div>
               </>)}
               {settingsTab === 'audio' && (<>
                 <div className="sat-content-header">
