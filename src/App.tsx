@@ -787,6 +787,8 @@ export default function App() {
         const threshold = type === 'sat' ? innerHeight / 2000 : innerHeight * MIN_SCREEN_FRAC;
         if (objScreenSz < threshold) { el.style.display = 'none'; return; }
         labelVec.setFromMatrixPosition(mesh.matrixWorld);
+        // Occluded by a planet? Hide label
+        if (isOccludedByPlanet(labelVec.clone())) { el.style.display = 'none'; return; }
         labelVec.project(cam);
         if (labelVec.z > 1) { el.style.display = 'none'; return; } // behind camera
         const x = (labelVec.x * .5 + .5) * innerWidth;
@@ -1092,8 +1094,7 @@ export default function App() {
 
     (window as any).__closeInfo = () => {
       infoRef.current!.classList.remove('open');
-      focIdx = -1; focSatIdx = -1;
-      // (no scale change needed — planets stay at base scale)
+      // Keep focIdx / focSatIdx — camera stays locked on the last selected object
       navRef.current!.querySelectorAll('.nav-planet').forEach(d => d.classList.remove('active'));
       document.querySelectorAll('.nav-moons').forEach(mc => (mc as HTMLElement).style.display = 'none');
     };
@@ -1196,9 +1197,10 @@ export default function App() {
         const el = bracketEls[i];
         if (!el) continue;
         const sm = sd.meshes[i];
-        if (!sm || !sm.visible || !showBrackets) { el.style.display = 'none'; continue; }
+        if (!sm || !sm.visible || !showBrackets || !showHelpers) { el.style.display = 'none'; continue; }
 
         bracketVec.setFromMatrixPosition(sm.matrixWorld);
+        if (isOccludedByPlanet(bracketVec.clone())) { el.style.display = 'none'; continue; }
         bracketVec.project(camera);
         if (bracketVec.z > 1) { el.style.display = 'none'; continue; }
 
@@ -1224,6 +1226,30 @@ export default function App() {
 
     // (satSize removed — brackets always shown)
     const MIN_SCREEN_FRAC = 1 / 5000; // hide objects + labels + orbits when smaller than 1/5000 of screen
+
+    // Check if a world-space point is occluded by any visible planet (behind it from camera's view)
+    function isOccludedByPlanet(worldPos: THREE.Vector3): boolean {
+      const cp = cam.position;
+      for (let pi = 0; pi < meshes.length; pi++) {
+        const pm = meshes[pi];
+        if (!pm.visible) continue;
+        const pr = baseScale(pi) * P[pi].r;
+        if (pr < 0.001) continue;
+        // Vector from camera to planet and camera to point
+        const camToPlanet = pm.position.clone().sub(cp);
+        const camToPoint = worldPos.clone().sub(cp);
+        const planetDist = camToPlanet.length();
+        const pointDist = camToPoint.length();
+        // Point must be farther than planet
+        if (pointDist <= planetDist) continue;
+        // Check angular separation — if point is within the planet's angular radius, it's occluded
+        const dot = camToPlanet.dot(camToPoint) / (planetDist * pointDist);
+        const angularR = Math.asin(Math.min(pr / planetDist, 1));
+        const angularSep = Math.acos(Math.min(Math.max(dot, -1), 1));
+        if (angularSep < angularR) return true;
+      }
+      return false;
+    }
 
     // ═══════ PLANET / MOON SELECTION HELPERS ═══════
     const helperContainer = helpersRef.current!;
@@ -1339,6 +1365,7 @@ export default function App() {
         if (screenSz >= 20) { h.el.style.display = 'none'; continue; }
         // Don't show if behind camera
         helperVec.setFromMatrixPosition(mesh.matrixWorld);
+        if (isOccludedByPlanet(helperVec.clone())) { h.el.style.display = 'none'; continue; }
         helperVec.project(cam);
         if (helperVec.z > 1) { h.el.style.display = 'none'; continue; }
 
@@ -1550,8 +1577,13 @@ export default function App() {
           // Visibility is governed by hideAllSats (Earth screen size < 1/100)
           // No per-satellite screen-size check — satellites are always tiny but shown when Earth is visible
 
-          // Trail: skip entirely at high speeds (orbits too fast for meaningful trails)
-          if (satTrails[i] && spd <= 3600) {
+          // Trail: hide and clear at high speeds (> 2hr/s = 7200)
+          if (satTrails[i] && spd > 7200) {
+            if (satTrailLines[i]) { satTrailLines[i].visible = false; satTrailLines[i].geometry.setDrawRange(0, 0); }
+            satTrails[i].fill(0); satTrailReady[i] = false;
+          }
+          // Trail: compute at normal speeds
+          if (satTrails[i] && spd <= 7200) {
             const lastIdx = TRAIL_LEN - 1;
             // Compute full trail (staggered across frames, or on first frame for this satellite)
             if (!satTrailReady[i] || frameCount % 60 === (i % 60)) {
@@ -1584,7 +1616,7 @@ export default function App() {
             if (line) {
               // Only show trail after first full valid computation
               // Hide trails at high time speed (> 1hr/s) — orbits are too fast for meaningful trails
-              line.visible = satTrailReady[i] && spd <= 3600;
+              line.visible = satTrailReady[i] && spd <= 7200;
               line.geometry.attributes.position.needsUpdate = true;
               line.geometry.setDrawRange(0, TRAIL_LEN);
               const mat = line.material as THREE.ShaderMaterial;
@@ -1840,7 +1872,7 @@ export default function App() {
                 if (tid === 'probes') return (
                   <button key="probes" className={`sat-tab ${satTab === 'probes' ? 'active' : ''}`} onClick={() => setSatTab('probes')}>
                     <span className="sat-tab-row"><span className="sat-tab-dot" style={{ background: 'linear-gradient(135deg, #81C784, #CE93D8, #FFB74D)' }} />探测器</span>
-                    <span className="sat-tab-count">{PROBES.length}</span>
+                    <span className="sat-tab-count">数量：{PROBES.length}</span>
                   </button>
                 );
                 const g = SAT_GROUPS.find(gg => gg.id === tid);
@@ -1848,7 +1880,7 @@ export default function App() {
                 return (
                   <button key={g.id} className={`sat-tab ${satTab === g.id ? 'active' : ''}`} onClick={() => setSatTab(g.id)}>
                     <span className="sat-tab-row"><span className="sat-tab-dot" style={{ background: g.color }} />{g.labelCn}</span>
-                    <span className="sat-tab-count">{satellites.filter(s => s.groupId === g.id).length}</span>
+                    <span className="sat-tab-count">数量：{satellites.filter(s => s.groupId === g.id).length}</span>
                   </button>
                 );
               })}

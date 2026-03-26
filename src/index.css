@@ -1,6 +1,6 @@
 @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@200;300;400;500;600;700&family=Space+Mono:wght@400;700&family=Noto+Sans+SC:wght@200;300;400;500;700&display=swap');
 
-*{margin:0;padding:0;box-sizing:border-box}
+*{margin:0;padding:0;box-sizing:border-box;-webkit-user-select:none;user-select:none}
 
 :root{
   --void:#04060F;
@@ -374,9 +374,8 @@ canvas{display:block;position:fixed;inset:0;z-index:1}
   .info-drag{display:none}
   /* Hide desktop nav — use mobile nav panel instead */
   .nav{display:none}
-  /* Hide desktop layer buttons — use mobile menu instead */
-  .layers .layer-btn{display:none}
-  .layers .mobile-btn{display:flex!important}
+  /* Compact layer buttons on mobile */
+  .layers .layer-btn{padding:4px 10px;font-size:11px}
   /* Sat panel → bottom sheet */
   .sat-panel{left:12px;right:12px;width:auto;top:auto;bottom:80px;max-height:45vh;border-radius:14px 14px 0 0}
   /* Status bar → center bottom */
