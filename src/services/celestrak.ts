@@ -204,7 +204,9 @@ export async function fetchStarlinkSatellites(): Promise<SatRecord[]> {
     try { data = await fetchGroupLive(group); } catch { data = []; }
   }
 
-  // Starlink: skip junk filter (they're all legit), but still validate SGP4
+  // Filter Starlink: only active operational LEO satellites
+  // Real Starlink orbit: 540-570km. Allow 300-800km for orbit raising/lowering.
+  // Filter by altitude from SGP4 position (ECI distance - Earth radius)
   const records: SatRecord[] = [];
   const now = new Date();
   for (const item of data) {
@@ -214,6 +216,11 @@ export async function fetchStarlinkSatellites(): Promise<SatRecord[]> {
       const satrec = twoline2satrec(tle[0], tle[1]);
       const pv = propagate(satrec, now);
       if (typeof pv.position === 'boolean' || !pv.position) continue;
+      const p = pv.position as EciVec3<number>;
+      const distKm = Math.sqrt(p.x * p.x + p.y * p.y + p.z * p.z);
+      const altitudeKm = distKm - 6371;
+      // Only keep satellites in LEO range (300-800km) — filters out deorbiting, GTO, debris
+      if (altitudeKm < 300 || altitudeKm > 800) continue;
       records.push({
         name: (item.OBJECT_NAME || '').trim(),
         groupId: 'starlink',
