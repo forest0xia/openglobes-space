@@ -398,6 +398,7 @@ export default function App() {
     // ═══════ NATURAL MOONS (all except Earth's Moon) ═══════
     const naturalMoonMeshes: THREE.Mesh[] = [];
     const naturalMoonData: typeof NATURAL_MOONS = [];
+    const naturalMoonOrbits: THREE.Line[] = [];
     NATURAL_MOONS.forEach(nm => {
       if (nm.id === 'moon') return; // Earth's Moon is already created with special handling
       const parentIdx = P.findIndex(p => p.id === nm.parentId);
@@ -429,6 +430,25 @@ export default function App() {
       scene.add(mesh);
       naturalMoonMeshes.push(mesh);
       naturalMoonData.push(nm);
+
+      // Orbit line for this natural moon (reuse parentPlanet from above)
+      if (parentPlanet) {
+        const distR2 = nm.distanceKm / parentPlanet.realRadiusKm;
+        const orbitR2 = distR2 * parentP.r;
+        const nmOrbitGeo = new THREE.BufferGeometry();
+        const nmOrbitPts: number[] = [];
+        for (let a = 0; a <= 64; a++) {
+          const ang = (a / 64) * Math.PI * 2;
+          nmOrbitPts.push(Math.cos(ang) * orbitR2, 0, Math.sin(ang) * orbitR2);
+        }
+        nmOrbitGeo.setAttribute('position', new THREE.Float32BufferAttribute(nmOrbitPts, 3));
+        const nmOrbitLine = new THREE.Line(nmOrbitGeo, new THREE.LineBasicMaterial({
+          color: parseInt(nm.color.replace('#', ''), 16), transparent: true, opacity: 0.2
+        }));
+        nmOrbitLine.userData = { parentIdx, isNaturalMoonOrbit: true };
+        scene.add(nmOrbitLine);
+        naturalMoonOrbits.push(nmOrbitLine);
+      }
     });
 
     // ═══════ ORBIT TOGGLES ═══════
@@ -438,6 +458,8 @@ export default function App() {
       document.getElementById('__orbitBtn')?.classList.toggle('on', showOrbits);
       // Planet orbits
       orbitLines.forEach(ol => { ol.visible = showOrbits; });
+      // Natural moon orbits
+      naturalMoonOrbits.forEach(ol => { ol.visible = showOrbits; });
       // Moon orbit line
       if (moonOrbitLine) moonOrbitLine.visible = showOrbits;
       // Satellite orbits — compute on first toggle, lazy-loaded
@@ -609,6 +631,21 @@ export default function App() {
       const sm = satDataRef.current.meshes[idx];
       const sat = satDataRef.current.sats[idx];
       if (!sm || !sat) return;
+
+      // If satellite group is disabled, enable it first
+      const gid = sat.groupId;
+      if (!satDataRef.current.groups[gid]) {
+        (window as any).__toggleSatGroup(gid);
+      }
+
+      // Check if satellite has a valid position (not at origin = Sun)
+      const distFromOrigin = sm.position.length();
+      if (distFromOrigin < 1 || !sm.visible) {
+        // Satellite hasn't been positioned yet — show toast
+        setToast({ title: sat.name, text: '该卫星位置尚未计算完成，请稍等后重试。' });
+        return;
+      }
+
       focIdx = -1;
       tT.copy(sm.position);
       tD = fitDistance(Math.max(sm.scale?.x || 0.01, 0.01));
@@ -703,8 +740,12 @@ export default function App() {
         const x = (labelVec.x * .5 + .5) * innerWidth;
         const y = (labelVec.y * -.5 + .5) * innerHeight;
         el.style.display = 'block';
-        el.style.left = (x + 12) + 'px'; // offset right so it doesn't cover the object
-        el.style.top = (y - 6) + 'px';
+        // Offset based on object screen size so label never overlaps
+        const screenR = Math.max(objScreenSz / 2, 8);
+        el.style.left = (x + screenR + 6) + 'px';
+        el.style.top = (y - screenR * 0.5) + 'px';
+        // Planet labels larger than satellite labels
+        el.style.fontSize = type === 'planet' ? '14px' : type === 'moon' ? '10px' : '9px';
       });
     }
 
@@ -903,7 +944,11 @@ export default function App() {
       infoRef.current!.classList.add('open');
     }
 
-    (window as any).__focusProbeByIdx = (i: number) => showProbeInfo(i);
+    (window as any).__focusProbeByIdx = (i: number) => {
+      // Enable probes if hidden
+      if (!layers.probe) { layers.probe = true; probeMeshes.forEach(m => m.visible = true); }
+      showProbeInfo(i);
+    };
     (window as any).__focusPlanetByIdx = (i: number) => focusObj(i);
 
     function showMoonInfo() {
@@ -1178,6 +1223,12 @@ export default function App() {
         );
         nm.scale.setScalar(pScale);
         if (!paused) nm.rotation.y += dt * 0.2;
+        // Update orbit line position and scale to follow parent
+        if (naturalMoonOrbits[i]) {
+          naturalMoonOrbits[i].position.copy(parentPos);
+          naturalMoonOrbits[i].scale.setScalar(pScale);
+          naturalMoonOrbits[i].visible = showOrbits && nm.visible;
+        }
         // Visibility: hide when screen size < innerHeight / 5000
         const nmScreenSz = getScreenSize(nm, cam, pScale * nm.userData.visualR);
         nm.visible = nmScreenSz >= innerHeight / 5000;
@@ -1509,7 +1560,8 @@ export default function App() {
               {['beidou', 'probes', 'stations', 'starlink', 'gps', 'visual'].map(tid => {
                 if (tid === 'probes') return (
                   <button key="probes" className={`sat-tab ${satTab === 'probes' ? 'active' : ''}`} onClick={() => setSatTab('probes')}>
-                    探测器<span className="sat-tab-count">{PROBES.length}</span>
+                    <span className="sat-tab-row"><span className="sat-tab-dot" style={{ background: 'linear-gradient(135deg, #81C784, #CE93D8, #FFB74D)' }} />探测器</span>
+                    <span className="sat-tab-count">{PROBES.length}</span>
                   </button>
                 );
                 const g = SAT_GROUPS.find(gg => gg.id === tid);
