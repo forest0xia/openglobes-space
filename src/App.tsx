@@ -1755,6 +1755,19 @@ export default function App() {
           <div>{toast.text}</div>
         </>}
       </div>
+
+      {/* Starlink loading HUD */}
+      {starlinkLoading && (
+        <div className="starlink-hud">
+          <div className="starlink-hud-text">
+            加载 Starlink 卫星数据 ({starlinkProgress}%)
+          </div>
+          <div className="starlink-hud-bar">
+            <div className="starlink-hud-fill" style={{ width: `${starlinkProgress}%` }} />
+          </div>
+          <div className="starlink-hud-sub">正在查询 CelesTrak 并计算 SGP4 轨道位置...</div>
+        </div>
+      )}
     </>
   );
 }
