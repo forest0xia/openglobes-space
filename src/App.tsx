@@ -592,7 +592,7 @@ export default function App() {
           const batch = newSats.slice(b, b + batchSize);
           batch.forEach(sat => {
             const sm = new THREE.Mesh(
-              new THREE.SphereGeometry(0.003, 4, 4),
+              new THREE.SphereGeometry(0.0005, 4, 4), // very small dot for Starlink
               new THREE.MeshBasicMaterial({ color: 0x8B5CF6 })
             ) as any as THREE.Mesh;
             const dn = sat.name;
@@ -740,11 +740,11 @@ export default function App() {
         const x = (labelVec.x * .5 + .5) * innerWidth;
         const y = (labelVec.y * -.5 + .5) * innerHeight;
         el.style.display = 'block';
-        // Offset based on object screen size so label never overlaps
-        const screenR = Math.max(objScreenSz / 2, 8);
-        el.style.left = (x + screenR + 6) + 'px';
-        el.style.top = (y - screenR * 0.5) + 'px';
-        // Planet labels larger than satellite labels
+        // Offset label to upper-right, proportional to screen size of the object
+        const screenR = objScreenSz / 2;
+        const offset = Math.max(screenR + 4, 6); // minimum 6px, otherwise just past the edge
+        el.style.left = (x + offset) + 'px';
+        el.style.top = (y - Math.max(screenR * 0.3, 4)) + 'px';
         el.style.fontSize = type === 'planet' ? '14px' : type === 'moon' ? '10px' : '9px';
       });
     }

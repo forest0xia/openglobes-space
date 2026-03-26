@@ -46,7 +46,7 @@ export const PROBES: ProbeMeta[] = [
     id: 'perseverance', name: 'Perseverance', nameCn: '毅力号', color: '#EF5350', emoji: '🔴',
     launched: 2020,
     desc: '在火星杰泽罗撞击坑寻找古代生命痕迹，首次在火星上制造氧气。',
-    fallbackPosition: { orbitPlanetId: 'mars', orbitDist: 1.2 },
+    fallbackPosition: { orbitPlanetId: 'mars', orbitDist: 0.65 }, // on Mars surface (radius 0.6)
   },
   {
     id: 'jwst', name: 'James Webb', nameCn: '韦伯望远镜', color: '#CE93D8', emoji: '🔭',
