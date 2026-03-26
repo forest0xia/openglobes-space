@@ -220,6 +220,15 @@ canvas{display:block;position:fixed;inset:0;z-index:1}
 .sat-panel *{cursor:default!important}
 .sat-panel-drag{cursor:grab!important}
 .sat-panel-title{font-family:var(--font-mono);font-size:11px;color:var(--glow);letter-spacing:1.5px;margin-bottom:10px;font-weight:700;margin-top:6px}
+.sat-tabs{display:flex;gap:2px;margin-bottom:10px;overflow-x:auto;padding-bottom:4px}
+.sat-tab{
+  background:none;border:none;color:var(--text-dim);font-family:var(--font-cn);font-size:11px;
+  padding:6px 10px;border-radius:8px;cursor:pointer;white-space:nowrap;
+  transition:all .2s;position:relative;flex-shrink:0;
+}
+.sat-tab:hover{color:var(--text);background:rgba(255,255,255,.03)}
+.sat-tab.active{color:var(--glow);background:var(--glow-dim)}
+.sat-tab-count{font-size:9px;color:var(--text-dim);margin-left:3px}
 .sat-panel-divider{height:1px;background:var(--glass-edge);margin:10px 0}
 .sat-group{margin-bottom:4px}
 .sat-count{font-family:var(--font-mono);font-size:10px;color:var(--text-dim);margin-left:auto}

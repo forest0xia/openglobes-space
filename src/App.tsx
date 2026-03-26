@@ -91,6 +91,7 @@ export default function App() {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [mobileSettingsOpen, setMobileSettingsOpen] = useState(false);
   const [toast, setToast] = useState<{ title: string; text: string } | null>(null);
+  const [satTab, setSatTab] = useState('probes'); // 'probes' | group id
   const [satellites, setSatellites] = useState<SatRecord[]>([]);
   const [satGroups, setSatGroups] = useState<Record<string, boolean>>({ beidou: true, stations: true, gps: false, starlink: false, visual: false });
 
@@ -765,23 +766,16 @@ export default function App() {
     const rc2 = new THREE.Raycaster();
     const m2v = new THREE.Vector2();
     function hoverFn(e: PointerEvent) {
+      // Only change cursor — no tooltip
       m2v.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
       rc2.setFromCamera(m2v, cam);
       const hoverTargets = [...meshes, ...probeMeshes, ...naturalMoonMeshes];
       if (moonMesh) hoverTargets.push(moonMesh);
       satDataRef.current.meshes.forEach(sm => { if (sm?.visible) hoverTargets.push(sm); });
       const hits = rc2.intersectObjects(hoverTargets, true);
-      const tip = tipRef.current!;
       if (hits.length) {
-        let hObj: THREE.Object3D | null = hits[0].object;
-        while (hObj && !hObj.userData?.isPlanet && !hObj.userData?.isProbe && !hObj.userData?.isMoon && !hObj.userData?.isNaturalMoon && !hObj.userData?.isSat) hObj = hObj.parent;
-        const d = hObj?.userData || hits[0].object.userData;
-        tip.textContent = d.isMoon ? d.cn : d.isNaturalMoon ? d.cn : d.isSat ? (d.displayName || d.name) : d.isProbe ? d.cn : (d.cn && d.n) ? `${d.cn} ${d.n}` : '';
-        tip.style.left = (e.clientX + 14) + 'px'; tip.style.top = (e.clientY - 8) + 'px';
-        tip.classList.add('show');
         if (!drag) document.body.style.cursor = 'pointer';
       } else {
-        tip.classList.remove('show');
         if (!drag) document.body.style.cursor = 'grab';
       }
     }
@@ -803,7 +797,7 @@ export default function App() {
     function applyAllScales() {
       P.forEach((p, i) => {
         if (p.sun) return;
-        const s = baseScale(i) * (i === focIdx ? 1.2 : 1);
+        const s = baseScale(i);
         meshes[i].scale.setScalar(s);
       });
     }
@@ -828,9 +822,7 @@ export default function App() {
       focIdx = i; const p = P[i];
       tT.copy(meshes[i].position);
       const visR = baseScale(i) * p.r;
-      tD = fitDistance(visR * 1.2); // 1.2x because we enlarge focused planet
-      // Apply scales — focused planet gets 1.2x on top of base
-      applyAllScales();
+      tD = fitDistance(visR);
       navRef.current!.querySelectorAll('.nav-planet').forEach(d => d.classList.toggle('active', (d as HTMLElement).dataset.idx === String(i)));
       // Show/hide moon sub-items
       document.querySelectorAll('.nav-moons').forEach(mc => (mc as HTMLElement).style.display = 'none');
@@ -919,7 +911,7 @@ export default function App() {
     (window as any).__closeInfo = () => {
       infoRef.current!.classList.remove('open');
       focIdx = -1;
-      applyAllScales(); // remove 1.2x enlarge but keep current view
+      // (no scale change needed — planets stay at base scale)
       navRef.current!.querySelectorAll('.nav-planet').forEach(d => d.classList.remove('active'));
       document.querySelectorAll('.nav-moons').forEach(mc => (mc as HTMLElement).style.display = 'none');
     };
@@ -1177,7 +1169,9 @@ export default function App() {
         const sc = baseScale(eIdx);
         // Satellite visual size — proportional to Earth, very small
         // Satellite visual size — very small relative to Earth
-        const baseSatSize = sc * earthSceneR * 0.0008;
+        // Real satellite is ~10m, Earth radius = 6371km = 1 scene unit
+        // True scale: 10/6371000 ≈ 0.0000016. We exaggerate to 0.0002 for minimal visibility.
+        const baseSatSize = sc * earthSceneR * 0.0002;
 
         // Hide all satellites + trails when Earth is too small on screen
         const earthScreenForSats = getScreenSize(meshes[eIdx], cam, earthSceneR * sc);
@@ -1211,7 +1205,7 @@ export default function App() {
           sm.position.set(pos.x, pos.y, pos.z);
 
           // Stations 5x bigger than regular sats
-          const thisSize = isStation ? baseSatSize * 5 : baseSatSize;
+          const thisSize = isStation ? baseSatSize * 3 : baseSatSize;
           sm.scale.setScalar(Math.max(thisSize, isStation ? 0.02 : 0.005));
 
           // Hide satellite if its own screen size is too small
@@ -1388,7 +1382,7 @@ export default function App() {
           <div className="brand-cn">此刻太空</div>
         </div>
         <div className="layers">
-          <button className="layer-btn on" ref={lSatRef} onClick={() => setSatListOpen(v => !v)}><span className="layer-dot" />卫星</button>
+          <button className={`layer-btn ${satListOpen ? 'on' : ''}`} ref={lSatRef} onClick={() => setSatListOpen(v => !v)}><span className="layer-dot" />卫星</button>
           <button className="layer-btn" onClick={() => setMobileSettingsOpen(v => !v)}>设置</button>
         </div>
       </div>
@@ -1463,21 +1457,36 @@ export default function App() {
             const onUp = () => { el.style.transition = ''; window.removeEventListener('pointermove', onMove); window.removeEventListener('pointerup', onUp); };
             window.addEventListener('pointermove', onMove); window.addEventListener('pointerup', onUp);
           }} />
-          <div className="sat-panel-title">卫星与探测器</div>
-          <label className="info-toggle" style={{ marginBottom: 8 }}>
-            <input type="checkbox" defaultChecked onChange={() => (window as any).__toggleL('probe')} />
-            <span>深空探测器</span>
-          </label>
-          <div className="sat-list" style={{ maxHeight: '12vh', marginBottom: 8 }}>
-            {PROBES.map((pr, i) => (
-              <div key={pr.id} className="sat-item" onClick={() => (window as any).__focusProbeByIdx?.(i)} style={{ cursor: 'pointer' }}>
-                <span className="sat-dot" style={{ background: pr.color }} />
-                <span className="sat-name">{pr.nameCn}</span>
-              </div>
+          {/* Tab bar */}
+          <div className="sat-tabs">
+            <button className={`sat-tab ${satTab === 'probes' ? 'active' : ''}`} onClick={() => setSatTab('probes')}>探测器</button>
+            {SAT_GROUPS.map(g => (
+              <button key={g.id} className={`sat-tab ${satTab === g.id ? 'active' : ''}`} onClick={() => setSatTab(g.id)} style={{ color: satTab === g.id ? g.color : undefined }}>
+                {g.labelCn}
+                <span className="sat-tab-count">{satellites.filter(s => s.groupId === g.id).length}</span>
+              </button>
             ))}
           </div>
-          <div className="sat-panel-divider" />
-          {SAT_GROUPS.map(g => {
+
+          {/* Tab content */}
+          {satTab === 'probes' ? (
+            <div>
+              <label className="info-toggle" style={{ marginBottom: 4, fontSize: 12 }}>
+                <input type="checkbox" defaultChecked onChange={() => (window as any).__toggleL('probe')} />
+                <span>显示探测器</span>
+              </label>
+              <div className="sat-list">
+                {PROBES.map((pr, i) => (
+                  <div key={pr.id} className="sat-item" onClick={() => (window as any).__focusProbeByIdx?.(i)}>
+                    <span className="sat-dot" style={{ background: pr.color }} />
+                    <span className="sat-name">{pr.nameCn}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (() => {
+            const g = SAT_GROUPS.find(gg => gg.id === satTab);
+            if (!g) return null;
             const descriptions: Record<string, string> = {
               beidou: '中国北斗卫星导航系统，中圆/地球同步轨道(MEO/GEO)，高度约21,500-35,786km',
               stations: '国际空间站(ISS)、中国空间站(CSS)等载人航天器，近地轨道(LEO)约400km',
@@ -1485,35 +1494,30 @@ export default function App() {
               starlink: 'SpaceX星链互联网卫星星座，近地轨道(LEO)约550km，在轨6000+颗（展示前20颗）',
               visual: '地面肉眼可见的明亮卫星（约100颗），多数在近地轨道(LEO)200-2000km',
             };
+            const groupSats = satellites.filter(s => s.groupId === g.id);
             return (
-              <div key={g.id} className="sat-group">
-                <label className="info-toggle">
-                  <input type="checkbox" checked={satGroups[g.id] ?? false} onChange={() => (window as any).__toggleSatGroup(g.id)} />
-                  <span style={{ color: g.color }}>{g.labelCn}</span>
-                  <span className="sat-count">{satellites.filter(s => s.groupId === g.id).length}</span>
-                  <span onClick={(e) => { e.preventDefault(); e.stopPropagation(); setToast({ title: g.labelCn, text: descriptions[g.id] || '' }); }} style={{ cursor: 'help', color: 'var(--glow)', fontSize: 11, marginLeft: 'auto', padding: '2px 8px', background: 'rgba(94,234,212,0.08)', borderRadius: 10, userSelect: 'none' }}>?</span>
-                </label>
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                  <label className="info-toggle" style={{ flex: 1, fontSize: 12 }}>
+                    <input type="checkbox" checked={satGroups[g.id] ?? false} onChange={() => (window as any).__toggleSatGroup(g.id)} />
+                    <span>显示</span>
+                  </label>
+                  <span onClick={() => setToast({ title: g.labelCn, text: descriptions[g.id] || '' })} style={{ cursor: 'pointer', color: 'var(--glow)', fontSize: 11, padding: '4px 10px', background: 'rgba(94,234,212,0.08)', borderRadius: 10 }}>详情</span>
+                </div>
+                <div className="sat-list">
+                  {groupSats.length > 0 ? groupSats.map((s) => {
+                    const realIdx = satellites.indexOf(s);
+                    return (
+                      <div key={realIdx} className="sat-item" onClick={() => (window as any).__focusSat(realIdx)}>
+                        <span className="sat-dot" style={{ background: s.color }} />
+                        <span className="sat-name">{getSatDisplayName(s.name, s.noradId)}</span>
+                      </div>
+                    );
+                  }) : <div className="sat-loading">加载中...</div>}
+                </div>
               </div>
             );
-          })}
-          {satellites.length > 0 && (
-            <>
-              <div className="sat-panel-divider" />
-              <div className="sat-panel-title" style={{ marginTop: 8 }}>选择卫星</div>
-              <div className="sat-list">
-                {satellites.filter(s => satGroups[s.groupId]).map((s) => {
-                  const realIdx = satellites.indexOf(s);
-                  return (
-                    <div key={realIdx} className="sat-item" onClick={() => (window as any).__focusSat(realIdx)}>
-                      <span className="sat-dot" style={{ background: s.color }} />
-                      <span className="sat-name">{getSatDisplayName(s.name, s.noradId)}</span>
-                    </div>
-                  );
-                })}
-              </div>
-            </>
-          )}
-          {satellites.length === 0 && <div className="sat-loading">加载中...</div>}
+          })()}
         </div>
       )}
 
@@ -1550,7 +1554,6 @@ export default function App() {
           </div>
         ))}
         <div className="mobile-section-title">卫星</div>
-        <label className="mobile-toggle"><input type="checkbox" defaultChecked onChange={() => (window as any).__toggleL('probe')} /><span>深空探测器</span></label>
       </div>
       <div className={`mobile-nav-backdrop ${mobileSettingsOpen ? 'open' : ''}`} onClick={() => setMobileSettingsOpen(false)} />
 
