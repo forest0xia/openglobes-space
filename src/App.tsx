@@ -8,8 +8,18 @@ import { createSatelliteModel } from './utils/satModel';
 import { createProbeModel } from './utils/probeModels';
 import { createTrailMaterial, createTrailIndexAttribute } from './utils/trailShader';
 import { getSatDisplayName } from './data/satNames';
+import { Line2 } from 'three/examples/jsm/lines/Line2.js';
+import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
+import { LineGeometry } from 'three/examples/jsm/lines/LineGeometry.js';
 
 const h2n = (h: string) => parseInt(h.replace('#', ''), 16);
+// Darken a hex color by a factor (simulates opacity against black background)
+const darkenHex = (hex: number, f: number) => {
+  const r = ((hex >> 16) & 0xff) * f;
+  const g = ((hex >> 8) & 0xff) * f;
+  const b = (hex & 0xff) * f;
+  return (Math.round(r) << 16) | (Math.round(g) << 8) | Math.round(b);
+};
 
 const TRACKS_LIST = [
   { file: 'space-ambient.mp3', name: '深空漂流' },
@@ -52,7 +62,7 @@ function procTex(color: number, type: 'sun' | 'gas' | 'rock') {
 
 const P = PLANETS.map(p => ({
   id: p.id, n: p.name, cn: p.nameCn.split('—')[0].trim(), cnFull: p.nameCn, col: h2n(p.color),
-  r: p.radius, d: p.distance, s: p.speed, tilt: p.tilt,
+  r: p.radius, d: p.distance, s: p.speed, tilt: p.tilt, rotP: p.rotationPeriod,
   sun: p.isSun ? 1 : 0, gas: p.textureType === 'gas' ? 1 : 0, ring: p.hasRing ? 1 : 0,
   stats: p.stats, fact: p.fact, texType: p.textureType,
   eccentricity: p.eccentricity ?? 0, orbitalIncl: p.orbitalIncl ?? 0,
@@ -87,6 +97,7 @@ export default function App() {
   // (lProbeRef removed — probe toggle is now in satellite panel)
   const labelsRef = useRef<HTMLDivElement>(null);
   const satBracketsRef = useRef<HTMLDivElement>(null);
+  const helpersRef = useRef<HTMLDivElement>(null);
   const [satListOpen, setSatListOpen] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [mobileSettingsOpen, setMobileSettingsOpen] = useState(false);
@@ -107,6 +118,8 @@ export default function App() {
 
   useEffect(() => {
     const scene = new THREE.Scene();
+    const satFocusScene = new THREE.Scene();
+    satFocusScene.add(new THREE.AmbientLight(0xffffff, 2)); // bright light so satellite is visible
     const cam = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, .1, 2000);
     const ren = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' });
     ren.setSize(innerWidth, innerHeight); ren.setPixelRatio(Math.min(devicePixelRatio, 2));
@@ -248,7 +261,7 @@ export default function App() {
 
     // ═══════ PLANETS ═══════
     const meshes: THREE.Mesh[] = [];
-    const orbitLines: THREE.Line[] = [];
+    const orbitLines: (THREE.Line | Line2)[] = [];
     // (glow outlines removed)
     let earthCloudMesh: THREE.Mesh | null = null;
     let moonMesh: THREE.Mesh | null = null;
@@ -393,9 +406,14 @@ export default function App() {
             xO * Math.sin(Omega) + yO * Math.cos(incl) * Math.cos(Omega)
           );
         }
-        const lineGeo = new THREE.BufferGeometry();
-        lineGeo.setAttribute('position', new THREE.Float32BufferAttribute(op, 3));
-        const ol = new THREE.Line(lineGeo, new THREE.LineBasicMaterial({ color: p.col, transparent: true, opacity: 0.35 }));
+        const lg = new LineGeometry();
+        lg.setPositions(op);
+        const lm = new LineMaterial({
+          color: darkenHex(p.col, 0.45),
+          linewidth: 1.5,
+          resolution: new THREE.Vector2(innerWidth, innerHeight),
+        });
+        const ol = new Line2(lg, lm);
         scene.add(ol); orbitLines.push(ol);
       }
     });
@@ -455,6 +473,13 @@ export default function App() {
         naturalMoonOrbits.push(nmOrbitLine);
       }
     });
+
+    // ═══════ HELPERS (selection circles for small planets/moons) ═══════
+    let showHelpers = true;
+    (window as any).__toggleHelpers = () => {
+      showHelpers = !showHelpers;
+      document.getElementById('__helperBtn')?.classList.toggle('on', showHelpers);
+    };
 
     // ═══════ ORBIT TOGGLES ═══════
     let showOrbits = true; // default on
@@ -664,27 +689,42 @@ export default function App() {
 
       // Check if satellite has a valid position (not at origin = Sun)
       const distFromOrigin = sm.position.length();
-      if (distFromOrigin < 1 || !sm.visible) {
+      if (distFromOrigin < 0.01) {
         // Satellite hasn't been positioned yet — show toast
         setToast({ title: sat.name, text: '该卫星位置尚未计算完成，请稍等后重试。' });
         return;
       }
+      // Ensure satellite is visible when focused
+      sm.visible = true;
 
       focIdx = -1;
+      focSatIdx = idx; // lock camera to follow this satellite
       tT.copy(sm.position);
-      tD = fitDistance(Math.max(sm.scale?.x || 0.01, 0.01));
-      // For LEO/MEO satellites: set camera angle to look from behind satellite toward Earth
-      // This prevents the camera from being between the satellite and Earth (inside Earth)
+      // Pure zoom — no model scaling. Float origin shift handles GPU precision.
+      // Compute world-space bounding sphere at current scale
+      const bbox = new THREE.Box3().setFromObject(sm);
+      const bsphere = new THREE.Sphere();
+      bbox.getBoundingSphere(bsphere);
+      // worldR: use bsphere or fallback to scale (model is roughly unit-sized, so scale ≈ world radius)
+      const worldR = Math.max(bsphere.radius, sm.scale.x);
+      const tanHalfFov = Math.tan(25 * Math.PI / 180);
+      // Camera distance so satellite fills ~1/20 screen width
+      tD = worldR * 3 / ((innerWidth / innerHeight) * tanHalfFov);
+      // Snap camera immediately
+      cT.copy(sm.position);
+      // Camera angle: place camera between satellite and Earth, looking outward at satellite
       const eIdx2 = P.findIndex(pp => pp.id === 'earth');
       if (eIdx2 >= 0) {
         const satToEarth = new THREE.Vector3().subVectors(meshes[eIdx2].position, sm.position);
         if (satToEarth.length() > 0.01) {
-          // Camera angle: point away from Earth (behind the satellite)
           const dir = satToEarth.normalize();
-          tA.t = Math.atan2(dir.x, dir.z) + Math.PI; // opposite direction
-          tA.p = Math.acos(Math.max(-0.99, Math.min(0.99, dir.y))) * 0.7 + 0.3;
+          // Camera on the outer side of satellite (away from Earth)
+          tA.t = Math.atan2(-dir.x, -dir.z);
+          tA.p = Math.acos(Math.max(-0.99, Math.min(0.99, -dir.y)));
         }
       }
+      // Snap all camera state after setting angles
+      cA.t = tA.t; cA.p = tA.p; cD = tD;
       const dn = getSatDisplayName(sat.name, sat.noradId);
       iNameRef.current!.textContent = dn;
       iNameRef.current!.style.color = sat.color;
@@ -769,7 +809,7 @@ export default function App() {
         if (type === 'sat') {
           // Satellites: label directly on top of the satellite dot
           el.style.left = x + 'px';
-          el.style.top = (y - 10) + 'px'; // exactly 10px above the point
+          el.style.top = (y - 50) + 'px'; // 50px above the satellite
           el.style.transform = 'translateX(-50%)';
           el.style.textAlign = 'center';
           el.style.fontSize = '8px';
@@ -847,7 +887,7 @@ export default function App() {
       // e.deltaY is ~100 per scroll notch. We want ~5% distance change per notch.
       // Zoom tiers: close planets → solar system → galaxy transition → deep space
       const zoomPct = tD < 10 ? 0.0003 : tD < 800 ? 0.0004 : tD < 30000 ? 0.00015 : 0.00008;
-      tD = Math.max(0.01, Math.min(500000, tD * (1 + e.deltaY * zoomPct)));
+      tD = Math.max(0.0001, Math.min(500000, tD * (1 + e.deltaY * zoomPct)));
     }, { passive: false });
 
     // Click — only if not dragged
@@ -924,6 +964,7 @@ export default function App() {
 
     // ═══════ FOCUS / INFO ═══════
     let focIdx = -1;
+    let focSatIdx = -1; // index into satDataRef.current.meshes for satellite follow
 
     // Apply initial real scale (must be after focIdx is declared)
     applyAllScales();
@@ -937,7 +978,7 @@ export default function App() {
     }
 
     function focusObj(i: number) {
-      focIdx = i; const p = P[i];
+      focIdx = i; focSatIdx = -1; const p = P[i];
       tT.copy(meshes[i].position);
       const visR = baseScale(i) * p.r;
       tD = fitDistance(visR);
@@ -963,7 +1004,7 @@ export default function App() {
     }
 
     function showProbeInfo(i: number) {
-      const pr = PR[i]; focIdx = -1;
+      const pr = PR[i]; focIdx = -1; focSatIdx = -1;
       tT.copy(probeMeshes[i].position); tD = fitDistance(0.05); // probes scaled to ~0.05
 
       iNameRef.current!.textContent = pr.n.toUpperCase();
@@ -989,7 +1030,7 @@ export default function App() {
 
     function showMoonInfo() {
       if (!moonMesh) return;
-      focIdx = -1;
+      focIdx = -1; focSatIdx = -1;
       tT.copy(moonMesh.position);
       tD = fitDistance(moonMesh.scale.x * 0.27);
       const md = moonMesh.userData;
@@ -1006,7 +1047,7 @@ export default function App() {
     }
 
     function showNaturalMoonInfo(d: any) {
-      focIdx = -1;
+      focIdx = -1; focSatIdx = -1;
       const nmIdx = naturalMoonMeshes.findIndex(m => m.userData.id === d.id);
       if (nmIdx < 0) return;
       const mesh = naturalMoonMeshes[nmIdx];
@@ -1032,7 +1073,7 @@ export default function App() {
 
     (window as any).__closeInfo = () => {
       infoRef.current!.classList.remove('open');
-      focIdx = -1;
+      focIdx = -1; focSatIdx = -1;
       // (no scale change needed — planets stay at base scale)
       navRef.current!.querySelectorAll('.nav-planet').forEach(d => d.classList.remove('active'));
       document.querySelectorAll('.nav-moons').forEach(mc => (mc as HTMLElement).style.display = 'none');
@@ -1165,6 +1206,131 @@ export default function App() {
     // (satSize removed — brackets always shown)
     const MIN_SCREEN_FRAC = 1 / 5000; // hide objects + labels + orbits when smaller than 1/5000 of screen
 
+    // ═══════ PLANET / MOON SELECTION HELPERS ═══════
+    const helperContainer = helpersRef.current!;
+    const HELPER_SIZE = 18; // circle diameter in px
+    // Colors matching orbit tones for each planet
+    const planetHelperColors: string[] = P.map(p => '#' + p.col.toString(16).padStart(6, '0'));
+
+    interface HelperEntry {
+      el: HTMLDivElement;
+      nameEl: HTMLDivElement;
+      getMesh: () => THREE.Object3D;
+      getWorldR: () => number;
+      color: string;
+      onClick: () => void;
+      name: string;
+      type: 'planet' | 'moon';
+      parentIdx?: number; // planet index for moons
+    }
+    const helperEntries: HelperEntry[] = [];
+
+    // Create helpers for planets (skip Sun)
+    P.forEach((p, i) => {
+      if (p.sun) return;
+      const el = document.createElement('div');
+      el.className = 'obj-helper';
+      el.style.borderColor = planetHelperColors[i];
+      const nameEl = document.createElement('div');
+      nameEl.className = 'obj-helper-name';
+      nameEl.textContent = p.cn;
+      nameEl.style.color = planetHelperColors[i];
+      el.appendChild(nameEl);
+      el.onclick = () => focusObj(i);
+      helperContainer.appendChild(el);
+      helperEntries.push({
+        el, nameEl,
+        getMesh: () => meshes[i],
+        getWorldR: () => baseScale(i) * p.r,
+        color: planetHelperColors[i],
+        onClick: () => focusObj(i),
+        name: p.cn, type: 'planet',
+      });
+    });
+
+    // Create helpers for Earth's Moon
+    if (moonMesh) {
+      const el = document.createElement('div');
+      el.className = 'obj-helper';
+      el.style.borderColor = '#AAAAAA';
+      const nameEl = document.createElement('div');
+      nameEl.className = 'obj-helper-name';
+      nameEl.textContent = '月球';
+      nameEl.style.color = '#AAAAAA';
+      el.appendChild(nameEl);
+      el.onclick = () => showMoonInfo();
+      helperContainer.appendChild(el);
+      helperEntries.push({
+        el, nameEl,
+        getMesh: () => moonMesh!,
+        getWorldR: () => baseScale(P.findIndex(pp => pp.id === 'earth')) * 0.27,
+        color: '#AAAAAA',
+        onClick: () => showMoonInfo(),
+        name: '月球', type: 'moon', parentIdx: P.findIndex(pp => pp.id === 'earth'),
+      });
+    }
+
+    // Helpers for natural moons will be added after they load (deferred)
+    function addNaturalMoonHelpers() {
+      naturalMoonMeshes.forEach((nm, i) => {
+        if (nm.userData._helperAdded) return;
+        nm.userData._helperAdded = true;
+        const d = nm.userData;
+        const col = naturalMoonData[i]?.color || '#888';
+        const el = document.createElement('div');
+        el.className = 'obj-helper';
+        el.style.borderColor = col;
+        const nameEl = document.createElement('div');
+        nameEl.className = 'obj-helper-name';
+        nameEl.textContent = d.cn || d.n;
+        nameEl.style.color = col;
+        el.appendChild(nameEl);
+        el.onclick = () => showNaturalMoonInfo(d);
+        helperContainer.appendChild(el);
+        helperEntries.push({
+          el, nameEl,
+          getMesh: () => nm,
+          getWorldR: () => nm.userData.visualR || 0.1,
+          color: col,
+          onClick: () => showNaturalMoonInfo(d),
+          name: d.cn || d.n, type: 'moon', parentIdx: nm.userData.parentIdx,
+        });
+      });
+    }
+
+    const helperVec = new THREE.Vector3();
+    function updateHelpers() {
+      // Add any new natural moon helpers
+      if (naturalMoonMeshes.length > 0) addNaturalMoonHelpers();
+
+      for (const h of helperEntries) {
+        if (!showHelpers) { h.el.style.display = 'none'; continue; }
+        const mesh = h.getMesh();
+        if (!mesh) { h.el.style.display = 'none'; continue; }
+
+        // Moons: hide when parent planet is too small (same rule as labels)
+        if (h.type === 'moon' && h.parentIdx !== undefined) {
+          const parentScreenSz = getScreenSize(meshes[h.parentIdx], cam, baseScale(h.parentIdx) * P[h.parentIdx].r);
+          if (parentScreenSz < innerHeight / 100) { h.el.style.display = 'none'; continue; }
+        }
+
+        // Only show helper when object is too small on screen (< 20px)
+        const worldR = h.getWorldR();
+        const screenSz = getScreenSize(mesh, cam, worldR);
+        if (screenSz >= 20) { h.el.style.display = 'none'; continue; }
+        // Don't show if behind camera
+        helperVec.setFromMatrixPosition(mesh.matrixWorld);
+        helperVec.project(cam);
+        if (helperVec.z > 1) { h.el.style.display = 'none'; continue; }
+
+        const x = (helperVec.x * .5 + .5) * innerWidth;
+        const y = (helperVec.y * -.5 + .5) * innerHeight;
+        h.el.style.display = 'block';
+        h.el.style.left = (x - HELPER_SIZE / 2) + 'px';
+        h.el.style.top = (y - HELPER_SIZE / 2) + 'px';
+      }
+    }
+
     // ═══════ ANIMATE ═══════
     // t = elapsed real seconds (accelerated by speed)
     // t = elapsed accelerated seconds. simStartMs = real timestamp at t=0.
@@ -1179,8 +1345,10 @@ export default function App() {
       if (!paused) t += dt * spd; // t in accelerated real seconds
 
       P.forEach((p, i) => {
+        // Self-rotation: 2π / (rotationPeriod_days * 86400) rad/s, scaled by t (speed-adjusted time)
+        const selfRotRate = 2 * Math.PI / (p.rotP * 86400);
         if (p.sun) {
-          meshes[i].rotation.y = t * EARTH_RATE * .5;
+          meshes[i].rotation.y = t * selfRotRate;
           return;
         }
         const meanAnomaly = initAngles[i] + t * EARTH_RATE * p.s;
@@ -1202,14 +1370,17 @@ export default function App() {
         meshes[i].position.x = xOrb * Math.cos(Omega) - yOrb * Math.cos(incl) * Math.sin(Omega);
         meshes[i].position.y = yOrb * Math.sin(incl);
         meshes[i].position.z = xOrb * Math.sin(Omega) + yOrb * Math.cos(incl) * Math.cos(Omega);
-        if (!paused) meshes[i].rotation.y += dt * .25;
+        meshes[i].rotation.y = t * selfRotRate;
 
         // Hide planet + its orbit if too small on screen
         if (orbitLines[i - 1]) orbitLines[i - 1].visible = showOrbits;
       });
 
-      // Cloud rotation (children inherit position, just rotate relative to parent)
-      if (earthCloudMesh && !paused) earthCloudMesh.rotation.y += dt * .02; // slight drift vs Earth surface
+      // Cloud rotation: slight drift relative to Earth surface (wind)
+      if (earthCloudMesh) {
+        const earthRotRate = 2 * Math.PI / (0.99727 * 86400);
+        earthCloudMesh.rotation.y = t * earthRotRate * 1.02; // 2% faster than surface
+      }
 
       // Moon orbital motion
       if (moonMesh) {
@@ -1257,7 +1428,8 @@ export default function App() {
           parentPos.z + Math.sin(orbAngle) * orbitDist
         );
         nm.scale.setScalar(pScale);
-        if (!paused) nm.rotation.y += dt * 0.2;
+        // Tidally locked: rotation period = orbital period, face parent
+        nm.rotation.y = orbAngle + Math.PI;
         // Update orbit line position and scale to follow parent
         if (naturalMoonOrbits[i]) {
           naturalMoonOrbits[i].position.copy(parentPos);
@@ -1284,7 +1456,7 @@ export default function App() {
           const da = pr.ang + tAngle * 0.001;
           m.position.set(Math.cos(da) * pr.dist, 0, Math.sin(da) * pr.dist);
         }
-        m.rotation.y += dt * .08;
+        m.rotation.y = t * (2 * Math.PI / 86400); // slow spin, ~1 rev/day at real time
       });
 
       // ═══ Update satellite positions + trails ═══
@@ -1308,6 +1480,8 @@ export default function App() {
         for (let i = 0; i < sd.sats.length; i++) {
           const sm = sd.meshes[i];
           if (!sm) continue;
+          // Skip focused satellite — handled by focus follow block
+          if (i === focSatIdx) continue;
           const sat = sd.sats[i];
           const groupOn = sd.groups[sat?.groupId] ?? false;
           if (!groupOn || hideAllSats) {
@@ -1350,18 +1524,14 @@ export default function App() {
           pos.z += Math.sin(seed * 2.7) * jit;
           sm.position.set(pos.x, pos.y, pos.z);
 
-          // Stations 5x bigger than regular sats
+          // Stations 3x bigger than regular sats
+          // Minimum size scales with Earth: 0.1% of Earth's scene radius (≈6km equiv, ~3px when Earth fills screen)
+          const minSatSize = earthSceneR * sc * 0.001;
           const thisSize = isStation ? baseSatSize * 3 : baseSatSize;
-          sm.scale.setScalar(Math.max(thisSize, isStation ? 0.02 : 0.005));
+          sm.scale.setScalar(Math.max(thisSize, isStation ? minSatSize * 2 : minSatSize));
 
-          // Hide satellite if its own screen size is too small
-          const satScreenSz = getScreenSize(sm, cam, Math.max(thisSize, 0.005));
-          if (satScreenSz < innerHeight / 5000) {
-            sm.visible = false;
-            if (satTrailLines[i]) { satTrailLines[i].visible = false; satTrailLines[i].geometry.setDrawRange(0, 0); }
-            if (satTrails[i]) { satTrails[i].fill(0); satTrailReady[i] = false; }
-            continue;
-          }
+          // Visibility is governed by hideAllSats (Earth screen size < 1/100)
+          // No per-satellite screen-size check — satellites are always tiny but shown when Earth is visible
 
           // Trail: skip entirely at high speeds (orbits too fast for meaningful trails)
           if (satTrails[i] && spd <= 3600) {
@@ -1410,6 +1580,11 @@ export default function App() {
         updateSatBrackets(sd, cam, sc);
 
         // ═══ Starlink Points positions (single draw call, batched) ═══
+        // Hide Starlink when Earth is too small on screen (reuse hideAllSats from above)
+        if (sd.starlinkPoints) {
+          const slGroupOn = sd.groups['starlink'] ?? false;
+          sd.starlinkPoints.visible = slGroupOn && !hideAllSats;
+        }
         if (sd.starlinkPoints?.visible && sd.starlinkSats && sd.starlinkPositions) {
           const slSats = sd.starlinkSats;
           const slPos = sd.starlinkPositions;
@@ -1438,30 +1613,48 @@ export default function App() {
       }
 
       if (focIdx >= 0) tT.copy(meshes[focIdx].position);
+      // Follow focused satellite — compute position, maintain focus scale, track
+      if (focSatIdx >= 0) {
+        const fsm = satDataRef.current.meshes[focSatIdx];
+        const fsat = satDataRef.current.sats[focSatIdx];
+        if (fsm && fsat) {
+          const fNow = new Date(simStartMs + t * 1000);
+          const fEci = getSatPositionECI(fsat, fNow);
+          if (fEci) {
+            const feIdx = P.findIndex(pp => pp.id === 'earth');
+            const fep = meshes[feIdx].position;
+            const fsc = baseScale(feIdx);
+            const fpos = eciToScene(fEci, fep, earthSceneR, fsc);
+            fsm.position.set(fpos.x, fpos.y, fpos.z);
+          }
+          fsm.visible = true;
+          tT.copy(fsm.position);
+        }
+      }
 
       const lf = 1 - Math.pow(.008, dt);
       cA.t += (tA.t - cA.t) * lf; cA.p += (tA.p - cA.p) * lf;
       cD += (tD - cD) * lf; cT.lerp(tT, lf);
-      // Prevent camera from entering any planet's interior
-      // After computing cam position, check against all visible planets and push out if inside
-      const camPos = cam.position;
-      meshes.forEach((m, idx) => {
-        if (!m.visible || P[idx].sun) return;
-        const camToObj = camPos.distanceTo(m.position);
-        const r = baseScale(idx) * P[idx].r * 1.1;
-        if (camToObj < r && r > 0.001) {
-          // Camera is inside this planet — push camera outward along the camera-to-planet direction
-          const pushDir = camPos.clone().sub(m.position).normalize();
-          cam.position.copy(m.position).add(pushDir.multiplyScalar(r));
-          cD = Math.max(cD, r);
-          tD = Math.max(tD, r);
-        }
-      });
+      // Prevent camera from entering any planet's interior (skip when following a satellite)
+      if (focSatIdx < 0) {
+        const camPos = cam.position;
+        meshes.forEach((m, idx) => {
+          if (!m.visible || P[idx].sun) return;
+          const camToObj = camPos.distanceTo(m.position);
+          const r = baseScale(idx) * P[idx].r * 1.1;
+          if (camToObj < r && r > 0.001) {
+            const pushDir = camPos.clone().sub(m.position).normalize();
+            cam.position.copy(m.position).add(pushDir.multiplyScalar(r));
+            cD = Math.max(cD, r);
+            tD = Math.max(tD, r);
+          }
+        });
+      }
       cam.position.set(cT.x + cD * Math.sin(cA.p) * Math.cos(cA.t), cT.y + cD * Math.cos(cA.p), cT.z + cD * Math.sin(cA.p) * Math.sin(cA.t));
       cam.lookAt(cT);
       // Dynamic near/far plane — prevents clipping when zoomed very close
-      cam.near = Math.max(cD * 0.001, 0.0001);
-      cam.far = Math.max(cD * 100, 2000);
+      cam.near = Math.max(cD * 0.0001, 0.000001);
+      cam.far = Math.max(cD * 10000, 2000);
       cam.updateProjectionMatrix();
 
       // Camera fill light: PointLight at camera position lights planet from all angles.
@@ -1516,10 +1709,49 @@ export default function App() {
       }
 
       ren.render(scene, cam);
+
+      // Second pass: render focused satellite at origin for float32 precision
+      if (focSatIdx >= 0) {
+        const fsm2 = satDataRef.current.meshes[focSatIdx];
+        if (fsm2 && fsm2.visible) {
+          const satWorldPos = fsm2.position.clone();
+          const savedCamPos = cam.position.clone();
+          const savedParent = fsm2.parent;
+          // Move satellite to mini scene at origin
+          satFocusScene.add(fsm2);
+          fsm2.position.set(0, 0, 0);
+          // Camera: offset from satellite preserved
+          cam.position.sub(satWorldPos);
+          cam.lookAt(0, 0, 0);
+          cam.near = Math.max(cD * 0.01, 0.000001);
+          cam.far = cD * 100;
+          cam.updateProjectionMatrix();
+          cam.updateMatrixWorld(true);
+          // Render on top (clear depth only)
+          ren.autoClear = false;
+          ren.clearDepth();
+          ren.render(satFocusScene, cam);
+          ren.autoClear = true;
+          // Restore
+          if (savedParent) savedParent.add(fsm2); else scene.add(fsm2);
+          fsm2.position.copy(satWorldPos);
+          cam.position.copy(savedCamPos);
+          cam.lookAt(cT);
+          cam.near = Math.max(cD * 0.0001, 0.000001);
+          cam.far = Math.max(cD * 10000, 2000);
+          cam.updateProjectionMatrix();
+          cam.updateMatrixWorld(true);
+        }
+      }
+
       updateLabels();
+      updateHelpers();
     }
 
-    const onResize = () => { cam.aspect = innerWidth / innerHeight; cam.updateProjectionMatrix(); ren.setSize(innerWidth, innerHeight); };
+    const onResize = () => {
+      cam.aspect = innerWidth / innerHeight; cam.updateProjectionMatrix(); ren.setSize(innerWidth, innerHeight);
+      orbitLines.forEach(ol => { if ((ol as any).material?.resolution) (ol as any).material.resolution.set(innerWidth, innerHeight); });
+    };
     window.addEventListener('resize', onResize);
     setTimeout(() => introRef.current?.classList.add('gone'), 2200);
     satCountRef.current!.textContent = '142 颗卫星追踪中';
@@ -1713,6 +1945,7 @@ export default function App() {
       <div className="tip" ref={tipRef} />
       <div ref={labelsRef} />
       <div ref={satBracketsRef} />
+      <div ref={helpersRef} />
 
       {/* Mobile nav panel — slide from left */}
       <div className={`mobile-nav-panel ${mobileNavOpen ? 'open' : ''}`}>
@@ -1731,6 +1964,7 @@ export default function App() {
         <div className="mobile-section-title">显示设置</div>
         <label className="mobile-toggle"><input type="checkbox" defaultChecked onChange={() => (window as any).__toggleLabels()} /><span>名称标签</span></label>
         <label className="mobile-toggle"><input type="checkbox" defaultChecked onChange={() => (window as any).__toggleOrbits()} /><span>轨道线</span></label>
+        <label className="mobile-toggle"><input type="checkbox" defaultChecked id="__helperBtn" onChange={() => (window as any).__toggleHelpers()} /><span>选择辅助框</span></label>
         <div className="mobile-section-title">音效</div>
         <label className="mobile-toggle"><input type="checkbox" defaultChecked onChange={() => (window as any).__toggleSound()} /><span>开启音效</span></label>
         <div style={{ padding: '4px 0', fontSize: 11, color: '#5B6478' }}>

@@ -277,6 +277,23 @@ canvas{display:block;position:fixed;inset:0;z-index:1}
 }
 .sat-bracket:hover{opacity:1;transform:scale(1.5)}
 
+/* ═══════ PLANET/MOON SELECTION HELPERS ═══════ */
+.obj-helper{
+  position:fixed;z-index:54;width:18px;height:18px;pointer-events:auto;cursor:pointer;
+  border:1.5px solid;border-radius:50%;
+  background:transparent;
+  opacity:.5;transition:opacity .2s, transform .2s;
+}
+.obj-helper:hover{opacity:1;transform:scale(1.4)}
+.obj-helper-name{
+  position:absolute;bottom:100%;left:50%;transform:translateX(-50%);
+  margin-bottom:4px;
+  white-space:nowrap;font-size:9px;font-family:var(--font-cn),var(--font-mono),monospace;
+  pointer-events:none;opacity:0;transition:opacity .2s;
+  text-shadow:0 0 4px rgba(0,0,0,.8);
+}
+.obj-helper:hover .obj-helper-name{opacity:1}
+
 /* ═══════ SCENE LABELS ═══════ */
 .scene-label{
   position:fixed;z-index:50;pointer-events:none;
