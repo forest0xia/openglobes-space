@@ -118,8 +118,6 @@ export default function App() {
 
   useEffect(() => {
     const scene = new THREE.Scene();
-    const satFocusScene = new THREE.Scene();
-    satFocusScene.add(new THREE.AmbientLight(0xffffff, 2)); // bright light so satellite is visible
     const cam = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, .1, 2000);
     const ren = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' });
     ren.setSize(innerWidth, innerHeight); ren.setPixelRatio(Math.min(devicePixelRatio, 2));
@@ -698,33 +696,28 @@ export default function App() {
       sm.visible = true;
 
       focIdx = -1;
-      focSatIdx = idx; // lock camera to follow this satellite
+      focSatIdx = idx;
       tT.copy(sm.position);
-      // Pure zoom — no model scaling. Float origin shift handles GPU precision.
-      // Compute world-space bounding sphere at current scale
+      // Camera distance: satellite fills ~1/20 screen width
+      // Use bounding sphere to get ACTUAL world radius (not scale factor)
       const bbox = new THREE.Box3().setFromObject(sm);
       const bsphere = new THREE.Sphere();
       bbox.getBoundingSphere(bsphere);
-      // worldR: use bsphere or fallback to scale (model is roughly unit-sized, so scale ≈ world radius)
-      const worldR = Math.max(bsphere.radius, sm.scale.x);
-      const tanHalfFov = Math.tan(25 * Math.PI / 180);
-      // Camera distance so satellite fills ~1/20 screen width
-      tD = worldR * 3 / ((innerWidth / innerHeight) * tanHalfFov);
-      // Snap camera immediately
-      cT.copy(sm.position);
-      // Camera angle: place camera between satellite and Earth, looking outward at satellite
+      const satWorldR = bsphere.radius || sm.scale.x * 0.015; // fallback: model radius ~0.015
+      tD = satWorldR * 20 / ((innerWidth / innerHeight) * Math.tan(25 * Math.PI / 180));
+      // Camera behind satellite, looking toward Earth
       const eIdx2 = P.findIndex(pp => pp.id === 'earth');
       if (eIdx2 >= 0) {
         const satToEarth = new THREE.Vector3().subVectors(meshes[eIdx2].position, sm.position);
         if (satToEarth.length() > 0.01) {
           const dir = satToEarth.normalize();
-          // Camera on the outer side of satellite (away from Earth)
-          tA.t = Math.atan2(-dir.x, -dir.z);
-          tA.p = Math.acos(Math.max(-0.99, Math.min(0.99, -dir.y)));
+          tA.t = Math.atan2(dir.x, dir.z) + Math.PI;
+          tA.p = Math.acos(Math.max(-0.99, Math.min(0.99, dir.y))) * 0.7 + 0.3;
         }
       }
-      // Snap all camera state after setting angles
-      cA.t = tA.t; cA.p = tA.p; cD = tD;
+      // Snap camera
+      cD = tD; cT.copy(sm.position); cA.t = tA.t; cA.p = tA.p;
+      console.log('[focusSat]', { idx, bsphereR: bsphere.radius, satWorldR, tD, floatSteps: tD / (20 * Math.pow(2, -23)) });
       const dn = getSatDisplayName(sat.name, sat.noradId);
       iNameRef.current!.textContent = dn;
       iNameRef.current!.style.color = sat.color;
@@ -887,7 +880,10 @@ export default function App() {
       // e.deltaY is ~100 per scroll notch. We want ~5% distance change per notch.
       // Zoom tiers: close planets → solar system → galaxy transition → deep space
       const zoomPct = tD < 10 ? 0.0003 : tD < 800 ? 0.0004 : tD < 30000 ? 0.00015 : 0.00008;
-      tD = Math.max(0.0001, Math.min(500000, tD * (1 + e.deltaY * zoomPct)));
+      const zoomMin = focSatIdx >= 0 ? 0.0000001 : 0.01;
+      tD = Math.max(zoomMin, Math.min(500000, tD * (1 + e.deltaY * zoomPct)));
+      // Auto-cancel satellite follow when zoomed out far
+      if (focSatIdx >= 0 && tD > 1) focSatIdx = -1;
     }, { passive: false });
 
     // Click — only if not dragged
@@ -1613,7 +1609,7 @@ export default function App() {
       }
 
       if (focIdx >= 0) tT.copy(meshes[focIdx].position);
-      // Follow focused satellite — compute position, maintain focus scale, track
+      // Follow focused satellite
       if (focSatIdx >= 0) {
         const fsm = satDataRef.current.meshes[focSatIdx];
         const fsat = satDataRef.current.sats[focSatIdx];
@@ -1629,14 +1625,24 @@ export default function App() {
           }
           fsm.visible = true;
           tT.copy(fsm.position);
+          cT.copy(fsm.position); // snap every frame — no lerp drift for origin shift precision
+          if (frameCount % 120 === 0) {
+            console.log('[satFollow]', {
+              cD, tD, scale: fsm.scale.x,
+              satPos: fsm.position.toArray().map((v: number) => +v.toFixed(6)),
+              camPos: cam.position.toArray().map((v: number) => +v.toFixed(6)),
+              cT: cT.toArray().map((v: number) => +v.toFixed(6)),
+              near: cam.near, far: cam.far,
+            });
+          }
         }
       }
 
       const lf = 1 - Math.pow(.008, dt);
       cA.t += (tA.t - cA.t) * lf; cA.p += (tA.p - cA.p) * lf;
       cD += (tD - cD) * lf; cT.lerp(tT, lf);
-      // Prevent camera from entering any planet's interior (skip when following a satellite)
-      if (focSatIdx < 0) {
+      // Prevent camera from entering any planet's interior
+      {
         const camPos = cam.position;
         meshes.forEach((m, idx) => {
           if (!m.visible || P[idx].sun) return;
@@ -1653,8 +1659,8 @@ export default function App() {
       cam.position.set(cT.x + cD * Math.sin(cA.p) * Math.cos(cA.t), cT.y + cD * Math.cos(cA.p), cT.z + cD * Math.sin(cA.p) * Math.sin(cA.t));
       cam.lookAt(cT);
       // Dynamic near/far plane — prevents clipping when zoomed very close
-      cam.near = Math.max(cD * 0.0001, 0.000001);
-      cam.far = Math.max(cD * 10000, 2000);
+      cam.near = Math.max(cD * 0.001, 0.0001);
+      cam.far = Math.max(cD * 100, 2000);
       cam.updateProjectionMatrix();
 
       // Camera fill light: PointLight at camera position lights planet from all angles.
@@ -1708,42 +1714,26 @@ export default function App() {
         dsMat.opacity = 0;
       }
 
-      ren.render(scene, cam);
-
-      // Second pass: render focused satellite at origin for float32 precision
-      if (focSatIdx >= 0) {
-        const fsm2 = satDataRef.current.meshes[focSatIdx];
-        if (fsm2 && fsm2.visible) {
-          const satWorldPos = fsm2.position.clone();
-          const savedCamPos = cam.position.clone();
-          const savedParent = fsm2.parent;
-          // Move satellite to mini scene at origin
-          satFocusScene.add(fsm2);
-          fsm2.position.set(0, 0, 0);
-          // Camera: offset from satellite preserved
-          cam.position.sub(satWorldPos);
-          cam.lookAt(0, 0, 0);
-          cam.near = Math.max(cD * 0.01, 0.000001);
-          cam.far = cD * 100;
-          cam.updateProjectionMatrix();
-          cam.updateMatrixWorld(true);
-          // Render on top (clear depth only)
-          ren.autoClear = false;
-          ren.clearDepth();
-          ren.render(satFocusScene, cam);
-          ren.autoClear = true;
-          // Restore
-          if (savedParent) savedParent.add(fsm2); else scene.add(fsm2);
-          fsm2.position.copy(satWorldPos);
-          cam.position.copy(savedCamPos);
-          cam.lookAt(cT);
-          cam.near = Math.max(cD * 0.0001, 0.000001);
-          cam.far = Math.max(cD * 10000, 2000);
-          cam.updateProjectionMatrix();
-          cam.updateMatrixWorld(true);
-        }
+      // Origin shift for satellite focus — simple version
+      if (focSatIdx >= 0 && satDataRef.current.meshes[focSatIdx]) {
+        const shift = cT.clone();
+        const savedPos = cam.position.clone();
+        const savedNear = cam.near, savedFar = cam.far;
+        scene.position.set(-shift.x, -shift.y, -shift.z);
+        cam.position.sub(shift);
+        cam.lookAt(0, 0, 0); // satellite is at origin after shift
+        cam.near = Math.max(cD * 0.01, 0.0000001);
+        cam.far = Math.max(cD * 100, 2000);
+        cam.updateProjectionMatrix();
+        scene.updateMatrixWorld(true);
+        ren.render(scene, cam);
+        scene.position.set(0, 0, 0);
+        cam.position.copy(savedPos);
+        cam.near = savedNear; cam.far = savedFar;
+        cam.updateProjectionMatrix();
+      } else {
+        ren.render(scene, cam);
       }
-
       updateLabels();
       updateHelpers();
     }
