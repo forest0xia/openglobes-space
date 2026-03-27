@@ -1901,7 +1901,7 @@ export default function App() {
 
           // Compute position at current simulated time
           const eci = getSatPositionECI(sat, now);
-          if (!eci) { sm.visible = false; if (satTrailLines[i]) satTrailLines[i].visible = false; continue; }
+          if (!eci || !isFinite(eci.x) || !isFinite(eci.y) || !isFinite(eci.z)) { sm.visible = false; if (satTrailLines[i]) satTrailLines[i].visible = false; continue; }
           const pos = eciToScene(eci, ep, earthSceneR, sc);
           // Sanity: if position is at origin or too far, hide
           const dxE = pos.x - ep.x, dyE = pos.y - ep.y, dzE = pos.z - ep.z;
@@ -2026,12 +2026,14 @@ export default function App() {
           const slEnd = Math.min(slStart + slBatch, slSats.length);
           for (let si = slStart; si < slEnd; si++) {
             const slEci = getSatPositionECI(slSats[si], now);
-            if (slEci) {
+            if (slEci && isFinite(slEci.x) && isFinite(slEci.y) && isFinite(slEci.z)) {
               const slP = eciToScene(slEci, ep, earthSceneR, sc);
-              // Store relative to Earth center
               slPos[si * 3] = slP.x - ep.x;
               slPos[si * 3 + 1] = slP.y - ep.y;
               slPos[si * 3 + 2] = slP.z - ep.z;
+            } else {
+              // Invalid SGP4 result — hide this point at origin
+              slPos[si * 3] = 0; slPos[si * 3 + 1] = 0; slPos[si * 3 + 2] = 0;
             }
           }
           // Position Points at Earth center — all vertices move with Earth
