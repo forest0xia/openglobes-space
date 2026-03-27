@@ -1693,13 +1693,13 @@ export default function App() {
     // ═══════ ANIMATE ═══════
     // t = elapsed real seconds (accelerated by speed)
     // t = elapsed accelerated seconds. simStartMs = real timestamp at t=0.
-    let t = 0; const clock = new THREE.Clock();
+    let t = 0; let lastTime = performance.now();
     const simStartMs = Date.now();
     let animId: number;
     let frameCount = 0;
     function anim() {
       animId = requestAnimationFrame(anim);
-      const dt = clock.getDelta();
+      const now2 = performance.now(); const dt = (now2 - lastTime) / 1000; lastTime = now2;
       frameCount++;
       if (!paused) t += dt * spd; // t in accelerated real seconds
 
