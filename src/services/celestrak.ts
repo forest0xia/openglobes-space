@@ -257,6 +257,7 @@ export function getSatPositionECI(sat: SatRecord, date: Date): { x: number; y: n
     const posVel = propagate(sat.satrec, date);
     if (typeof posVel.position === 'boolean' || !posVel.position) return null;
     const p = posVel.position as EciVec3<number>;
+    if (!isFinite(p.x) || !isFinite(p.y) || !isFinite(p.z)) return null;
     return { x: p.x, y: p.y, z: p.z };
   } catch { return null; }
 }

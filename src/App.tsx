@@ -962,13 +962,13 @@ export default function App() {
         const scSL = baseScale(eIdxSL);
         for (let si = 0; si < slCount; si++) {
           const slEci = getSatPositionECI(newSats[si], initNow);
-          if (slEci) {
+          if (slEci && isFinite(slEci.x) && isFinite(slEci.y) && isFinite(slEci.z)) {
             const slP = eciToScene(slEci, epSL, earthSceneR, scSL);
-            // Store relative to Earth center for precision + correct following
             slPositions[si * 3] = slP.x - epSL.x;
             slPositions[si * 3 + 1] = slP.y - epSL.y;
             slPositions[si * 3 + 2] = slP.z - epSL.z;
           }
+          // else: stays at 0,0,0 (Float32Array default)
           if (si % 1000 === 0) {
             setStarlinkProgress(70 + Math.round((si / slCount) * 30));
             await new Promise(r => setTimeout(r, 0)); // yield to UI
