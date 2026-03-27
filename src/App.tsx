@@ -1489,11 +1489,18 @@ export default function App() {
     (window as any).__resetCam = () => {
       tA = { t: 0.3, p: Math.PI / 3 }; tD = 105; tT.set(0, 0, 0);
       focIdx = -1; focSatIdx = -1;
-      // Reset speed to default (1分/秒 = index 3)
+      // Reset speed and simulated time to now
       spdIdx = 3; spd = SPEED_PRESETS[spdIdx].v; updSpd();
+      t = 0; lastTime = performance.now(); // reset sim clock to real time
       paused = false;
       if (playBtnRef.current) playBtnRef.current.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="4" x2="6" y2="20"/><line x1="18" y1="4" x2="18" y2="20"/></svg>';
       if (playBtnRef.current) playBtnRef.current.classList.add('on');
+      // Reset all satellite positions (clear stale SGP4 data)
+      const sd = satDataRef.current;
+      if (sd.starlinkPositions) sd.starlinkPositions.fill(0);
+      satTrailReady.fill(false);
+      satTrails.forEach(tr => tr.fill(0));
+      satTrailLines.forEach(tl => { if (tl) { tl.visible = false; tl.geometry.setDrawRange(0, 0); } });
       (window as any).__closeInfo();
     };
     const layers = { sat: true, probe: false }; // probes hidden by default
