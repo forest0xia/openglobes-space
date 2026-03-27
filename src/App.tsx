@@ -1189,19 +1189,16 @@ export default function App() {
     // Start with equatorial view (p = PI/2 = horizontal), camera will fly to Earth on load
     let cA = { t: 0.3, p: Math.PI / 3 }, cD = 105, cT = new THREE.Vector3();
     let tA = { t: 0.3, p: Math.PI / 3 }, tD = 105, tT = new THREE.Vector3();
-    // Drag momentum (inertia)
-    let dragVelT = 0, dragVelP = 0;
+    let pinchActive = false; // guard: suppress drag right after pinch ends
 
-    ren.domElement.addEventListener('pointerdown', e => { drag = true; dragMoved = false; dragVelT = 0; dragVelP = 0; pM = { x: e.clientX, y: e.clientY }; document.body.style.cursor = 'grabbing'; });
+    ren.domElement.addEventListener('pointerdown', e => { drag = true; dragMoved = false; pM = { x: e.clientX, y: e.clientY }; document.body.style.cursor = 'grabbing'; });
     ren.domElement.addEventListener('pointermove', e => {
-      if (drag) {
+      if (drag && !pinchActive) {
         const dx = e.clientX - pM.x, dy = e.clientY - pM.y;
         if (Math.abs(dx) > 2 || Math.abs(dy) > 2) dragMoved = true;
         const hDir = cfg.invertH ? -1 : 1;
         const vDir = cfg.invertV ? 1 : -1;
-        dragVelT = hDir * dx * .004;
-        dragVelP = vDir * dy * .004;
-        tA.t += dragVelT; tA.p = Math.max(.1, Math.min(Math.PI - .1, tA.p + dragVelP));
+        tA.t += hDir * dx * .004; tA.p = Math.max(.1, Math.min(Math.PI - .1, tA.p + vDir * dy * .004));
         pM = { x: e.clientX, y: e.clientY };
       }
       hoverFn(e);
@@ -1227,6 +1224,7 @@ export default function App() {
     ren.domElement.addEventListener('touchstart', e => {
       if (e.touches.length === 2) {
         e.preventDefault();
+        pinchActive = true;
         const dx = e.touches[0].clientX - e.touches[1].clientX;
         const dy = e.touches[0].clientY - e.touches[1].clientY;
         lastPinchDist = Math.sqrt(dx * dx + dy * dy);
@@ -1235,17 +1233,24 @@ export default function App() {
     ren.domElement.addEventListener('touchmove', e => {
       if (e.touches.length === 2) {
         e.preventDefault();
+        pinchActive = true;
         const dx = e.touches[0].clientX - e.touches[1].clientX;
         const dy = e.touches[0].clientY - e.touches[1].clientY;
         const dist = Math.sqrt(dx * dx + dy * dy);
         if (lastPinchDist > 0) {
-          const pinchDelta = (lastPinchDist - dist) * 3; // positive = zoom out
+          const pinchDelta = (lastPinchDist - dist) * 3;
           applyZoom(pinchDelta);
         }
         lastPinchDist = dist;
       }
     }, { passive: false });
-    ren.domElement.addEventListener('touchend', () => { lastPinchDist = 0; });
+    ren.domElement.addEventListener('touchend', () => {
+      lastPinchDist = 0;
+      if (pinchActive) {
+        // Suppress drag for a moment after pinch ends (prevents spin from finger lift)
+        setTimeout(() => { pinchActive = false; pM = { x: 0, y: 0 }; }, 200);
+      }
+    });
     // Prevent browser zoom on the whole document (iOS Safari double-tap, pinch)
     document.addEventListener('gesturestart', e => e.preventDefault(), { passive: false } as any);
     document.addEventListener('gesturechange', e => e.preventDefault(), { passive: false } as any);
@@ -2099,13 +2104,6 @@ export default function App() {
         });
       }
 
-      // Apply drag inertia when not dragging
-      if (!drag && (Math.abs(dragVelT) > 0.0001 || Math.abs(dragVelP) > 0.0001)) {
-        tA.t += dragVelT;
-        tA.p = Math.max(.1, Math.min(Math.PI - .1, tA.p + dragVelP));
-        dragVelT *= 0.92; // friction
-        dragVelP *= 0.92;
-      }
       const lf = 1 - Math.pow(.008, dt);
       cA.t += (tA.t - cA.t) * lf; cA.p += (tA.p - cA.p) * lf;
       if (focSatIdx >= 0) {
