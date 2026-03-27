@@ -2031,13 +2031,18 @@ export default function App() {
           const slEnd = Math.min(slStart + slBatch, slSats.length);
           for (let si = slStart; si < slEnd; si++) {
             const slEci = getSatPositionECI(slSats[si], now);
-            if (slEci && isFinite(slEci.x) && isFinite(slEci.y) && isFinite(slEci.z)) {
-              const slP = eciToScene(slEci, ep, earthSceneR, sc);
-              slPos[si * 3] = slP.x - ep.x;
-              slPos[si * 3 + 1] = slP.y - ep.y;
-              slPos[si * 3 + 2] = slP.z - ep.z;
+            if (slEci) {
+              // Filter: Starlink LEO must be 300-800km altitude (6671-7171km from center)
+              const eciDist = Math.sqrt(slEci.x * slEci.x + slEci.y * slEci.y + slEci.z * slEci.z);
+              if (eciDist > 6671 && eciDist < 7171) {
+                const slP = eciToScene(slEci, ep, earthSceneR, sc);
+                slPos[si * 3] = slP.x - ep.x;
+                slPos[si * 3 + 1] = slP.y - ep.y;
+                slPos[si * 3 + 2] = slP.z - ep.z;
+              } else {
+                slPos[si * 3] = 0; slPos[si * 3 + 1] = 0; slPos[si * 3 + 2] = 0;
+              }
             } else {
-              // Invalid SGP4 result — hide this point at origin
               slPos[si * 3] = 0; slPos[si * 3 + 1] = 0; slPos[si * 3 + 2] = 0;
             }
           }
