@@ -16,11 +16,21 @@ jobs:
 
       - name: Fetch satellite data from CelesTrak
         run: node scripts/fetch-satellites.cjs
+        timeout-minutes: 5
+
+      - name: Verify cache is non-empty
+        run: |
+          SIZE=$(stat -c%s public/data/satellites-cache.json 2>/dev/null || echo 0)
+          echo "Cache size: ${SIZE} bytes"
+          if [ "$SIZE" -lt 1000 ]; then
+            echo "::error::Cache file too small, fetch likely failed"
+            exit 1
+          fi
 
       - name: Commit if changed
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add public/data/
-          git diff --staged --quiet || git commit -m "🛰 satellite data update $(date -u +%Y-%m-%d)"
+          git diff --staged --quiet || git commit -m "satellite data update $(date -u +%Y-%m-%d)"
           git push

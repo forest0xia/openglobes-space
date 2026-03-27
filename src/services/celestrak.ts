@@ -17,19 +17,18 @@ export interface SatGroup {
   label: string;
   labelCn: string;
   color: string;
-  url: string; // live API fallback
 }
 
 export const SAT_GROUPS: SatGroup[] = [
-  { id: 'beidou', label: 'BeiDou', labelCn: '北斗', color: '#7EC8E3', url: 'https://celestrak.org/NORAD/elements/gp.php?GROUP=beidou&FORMAT=json' },
-  { id: 'stations', label: 'Stations', labelCn: '空间站', color: '#F59E0B', url: 'https://celestrak.org/NORAD/elements/gp.php?GROUP=stations&FORMAT=json' },
-  { id: 'gps', label: 'GPS', labelCn: 'GPS', color: '#3B82F6', url: 'https://celestrak.org/NORAD/elements/gp.php?GROUP=gps-ops&FORMAT=json' },
-  { id: 'starlink', label: 'Starlink', labelCn: 'Starlink', color: '#8B5CF6', url: 'https://celestrak.org/NORAD/elements/gp.php?GROUP=starlink&FORMAT=json' },
-  { id: 'visual', label: 'Brightest', labelCn: '明亮卫星', color: '#10B981', url: 'https://celestrak.org/NORAD/elements/gp.php?GROUP=visual&FORMAT=json' },
-  { id: 'weather', label: 'Weather', labelCn: '气象卫星', color: '#06B6D4', url: 'https://celestrak.org/NORAD/elements/gp.php?GROUP=weather&FORMAT=json' },
-  { id: 'resource', label: 'Earth Resources', labelCn: '地球资源', color: '#84CC16', url: 'https://celestrak.org/NORAD/elements/gp.php?GROUP=resource&FORMAT=json' },
-  { id: 'science', label: 'Science', labelCn: '科学卫星', color: '#E879F9', url: 'https://celestrak.org/NORAD/elements/gp.php?GROUP=science&FORMAT=json' },
-  { id: 'geodetic', label: 'Geodetic', labelCn: '大地测量', color: '#FB923C', url: 'https://celestrak.org/NORAD/elements/gp.php?GROUP=geodetic&FORMAT=json' },
+  { id: 'beidou', label: 'BeiDou', labelCn: '北斗', color: '#7EC8E3' },
+  { id: 'science', label: 'Science', labelCn: '科学卫星', color: '#E879F9' },
+  { id: 'gps', label: 'GPS', labelCn: 'GPS', color: '#3B82F6' },
+  { id: 'stations', label: 'Stations', labelCn: '空间站', color: '#F59E0B' },
+  { id: 'starlink', label: 'Starlink', labelCn: 'Starlink', color: '#8B5CF6' },
+  { id: 'weather', label: 'Weather', labelCn: '气象卫星', color: '#06B6D4' },
+  { id: 'resource', label: 'Earth Resources', labelCn: '地球资源', color: '#84CC16' },
+  { id: 'geodetic', label: 'Geodetic', labelCn: '大地测量', color: '#FB923C' },
+  { id: 'visual', label: 'Brightest', labelCn: '明亮卫星', color: '#10B981' },
 ];
 
 export interface SatRecord {
@@ -62,9 +61,10 @@ function ommToTLE(omm: any): [string, string] | null {
       if (val === 0) return ' 00000-0';
       const sign = val < 0 ? '-' : ' ';
       const abs = Math.abs(val);
-      const exp = Math.floor(Math.log10(abs));
+      // TLE exponential: value = ±0.XXXXX × 10^(±Y), mantissa in [0.1, 1.0)
+      const exp = Math.floor(Math.log10(abs) + 1);
       const man = abs / Math.pow(10, exp);
-      const manStr = Math.round(man * 100000).toString().padStart(5, '0');
+      const manStr = Math.round(man * 100000).toString().padStart(5, '0').slice(0, 5);
       const expSign = exp < 0 ? '-' : '+';
       return sign + manStr + expSign + Math.abs(exp);
     }
@@ -134,7 +134,10 @@ function parseOMMArray(data: any[], groupId: string, color: string): SatRecord[]
   return records;
 }
 
-// ═══════ LOADING: CACHE FIRST, API FALLBACK ═══════
+// ═══════ LOADING: CACHE ONLY ═══════
+// All satellite data comes from the static cache file updated daily by GitHub Actions.
+// The app NEVER contacts CelesTrak directly — this avoids rate-limiting (403) and
+// ensures deterministic, offline-capable rendering.
 
 interface CacheFile {
   timestamp: string;
@@ -153,43 +156,22 @@ async function loadCache(): Promise<CacheFile | null> {
   } catch { return null; }
 }
 
-function isCacheFresh(cache: CacheFile): boolean {
-  const age = Date.now() - new Date(cache.timestamp).getTime();
-  return age < 48 * 60 * 60 * 1000; // 48 hours
-}
-
-async function fetchGroupLive(group: SatGroup): Promise<any[]> {
-  const res = await fetch(group.url);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
-}
-
 /**
  * Load all satellites except Starlink (loaded separately for performance).
+ * Data source: static cache only (updated daily by GitHub Actions).
  */
 export async function fetchAllSatellites(): Promise<SatRecord[]> {
   const cache = await loadCache();
+  if (!cache) return [];
   const results: SatRecord[] = [];
-  const seenNoradIds = new Set<number>(); // dedup across groups
+  const seenNoradIds = new Set<number>();
 
   for (const group of SAT_GROUPS) {
-    if (group.id === 'starlink') continue; // loaded separately
-    let data: any[] | null = null;
-
-    // Try cache first
-    if (cache && isCacheFresh(cache) && cache.groups[group.id]) {
-      data = cache.groups[group.id];
-    }
-
-    // Fallback to live API
-    if (!data || data.length === 0) {
-      try { data = await fetchGroupLive(group); } catch { data = []; }
-    }
-
-    const groupColor = group.color;
-    const parsed = parseOMMArray(data, group.id, groupColor);
+    if (group.id === 'starlink') continue;
+    const data = cache.groups[group.id] || [];
+    const parsed = parseOMMArray(data, group.id, group.color);
     for (const sat of parsed) {
-      if (sat.noradId && seenNoradIds.has(sat.noradId)) continue; // skip duplicate
+      if (sat.noradId && seenNoradIds.has(sat.noradId)) continue;
       if (sat.noradId) seenNoradIds.add(sat.noradId);
       results.push(sat);
     }
@@ -199,38 +181,39 @@ export async function fetchAllSatellites(): Promise<SatRecord[]> {
 }
 
 /**
- * Load Starlink satellites from cache or live API.
+ * Load Starlink satellites from static cache.
+ * Data source: static cache only (updated daily by GitHub Actions).
  */
 export async function fetchStarlinkSatellites(): Promise<SatRecord[]> {
   const cache = await loadCache();
+  if (!cache) return [];
   const group = SAT_GROUPS.find(g => g.id === 'starlink')!;
-  let data: any[] | null = null;
-
-  if (cache && isCacheFresh(cache) && cache.groups.starlink) {
-    data = cache.groups.starlink;
-  }
-
-  if (!data || data.length === 0) {
-    try { data = await fetchGroupLive(group); } catch { data = []; }
-  }
+  const data = cache.groups.starlink || [];
 
   // Filter Starlink: only active operational LEO satellites
   // Real Starlink orbit: 540-570km. Allow 300-800km for orbit raising/lowering.
-  // Filter by altitude from SGP4 position (ECI distance - Earth radius)
   const records: SatRecord[] = [];
   const now = new Date();
+  let dbgTleFail = 0, dbgSgpFail = 0, dbgNanFail = 0, dbgAltFail = 0;
+  // Debug: test first item's TLE conversion
+  if (data.length > 0) {
+    const testTle = ommToTLE(data[0]);
+    console.log('[Starlink debug] first item BSTAR:', data[0].BSTAR, 'EPOCH:', data[0].EPOCH);
+    console.log('[Starlink debug] TLE line1 len:', testTle?.[0]?.length, 'line2 len:', testTle?.[1]?.length);
+    console.log('[Starlink debug] TLE line1:', testTle?.[0]);
+  }
   for (const item of data) {
     try {
       const tle = ommToTLE(item);
-      if (!tle) continue;
+      if (!tle) { dbgTleFail++; continue; }
       const satrec = twoline2satrec(tle[0], tle[1]);
       const pv = propagate(satrec, now);
-      if (typeof pv.position === 'boolean' || !pv.position) continue;
+      if (typeof pv.position === 'boolean' || !pv.position) { dbgSgpFail++; continue; }
       const p = pv.position as EciVec3<number>;
+      if (!isFinite(p.x) || !isFinite(p.y) || !isFinite(p.z)) { dbgNanFail++; continue; }
       const distKm = Math.sqrt(p.x * p.x + p.y * p.y + p.z * p.z);
       const altitudeKm = distKm - 6371;
-      // Only keep satellites in LEO range (300-800km) — filters out deorbiting, GTO, debris
-      if (altitudeKm < 300 || altitudeKm > 800) continue;
+      if (altitudeKm < 300 || altitudeKm > 800) { dbgAltFail++; continue; }
       records.push({
         name: (item.OBJECT_NAME || '').trim(),
         groupId: 'starlink',
@@ -238,8 +221,15 @@ export async function fetchStarlinkSatellites(): Promise<SatRecord[]> {
         satrec,
         noradId: item.NORAD_CAT_ID || 0,
       });
-    } catch { /* skip */ }
+    } catch (e) {
+      if (dbgTleFail + dbgSgpFail + dbgNanFail + dbgAltFail + records.length === 0) {
+        console.error('[Starlink debug] FIRST EXCEPTION:', e);
+      }
+      dbgTleFail = (dbgTleFail || 0); // reuse as catch counter below
+    }
   }
+  const dbgCatchCount = data.length - records.length - dbgTleFail - dbgSgpFail - dbgNanFail - dbgAltFail;
+  console.log(`[Starlink] ${data.length} raw → ${records.length} active (300-800km) | tleFail:${dbgTleFail} sgpFail:${dbgSgpFail} nanFail:${dbgNanFail} altFail:${dbgAltFail} caught:${dbgCatchCount}`);
   return records;
 }
 
@@ -249,8 +239,7 @@ export async function fetchSatelliteGroup(groupId: string): Promise<SatRecord[]>
   const group = SAT_GROUPS.find(g => g.id === groupId);
   if (!group) return [];
   const cache = await loadCache();
-  let data = cache?.groups[groupId] || null;
-  if (!data) { try { data = await fetchGroupLive(group); } catch { return []; } }
+  const data = cache?.groups[groupId] || [];
   return parseOMMArray(data, groupId, group.color);
 }
 

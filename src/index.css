@@ -300,21 +300,20 @@ canvas{display:block;position:fixed;inset:0;z-index:1}
 
 /* ═══════ SATELLITE BRACKETS ═══════ */
 .sat-bracket{
-  position:fixed;z-index:55;width:12px;height:12px;pointer-events:auto;cursor:pointer;
+  position:fixed;left:0;top:0;z-index:55;width:12px;height:12px;pointer-events:auto;cursor:pointer;
   border:1px solid;border-radius:1px;
-  /* corner brackets effect via clip-path */
   background:transparent;
   box-shadow:inset 0 0 3px currentColor;
-  opacity:.6;transition:opacity .2s;
+  opacity:.6;transition:opacity .2s;will-change:translate;
 }
 .sat-bracket:hover{opacity:1;transform:scale(1.5)}
 
 /* ═══════ PLANET/MOON SELECTION HELPERS ═══════ */
 .obj-helper{
-  position:fixed;z-index:54;width:18px;height:18px;pointer-events:auto;cursor:pointer;
+  position:fixed;left:0;top:0;z-index:54;width:18px;height:18px;pointer-events:auto;cursor:pointer;
   border:1.5px solid;border-radius:50%;
   background:transparent;
-  opacity:.5;transition:opacity .2s, transform .2s;
+  opacity:.5;transition:opacity .2s, transform .2s;will-change:translate;
 }
 .obj-helper:hover{opacity:1;transform:scale(1.4)}
 .obj-helper-name{
@@ -328,11 +327,11 @@ canvas{display:block;position:fixed;inset:0;z-index:1}
 
 /* ═══════ SCENE LABELS ═══════ */
 .scene-label{
-  position:fixed;z-index:50;pointer-events:none;
+  position:fixed;left:0;top:0;z-index:50;pointer-events:none;
   font-family:var(--font-cn);font-size:10px;font-weight:400;
   color:rgba(212,217,227,.7);text-align:left;
   white-space:nowrap;
-  text-shadow:0 1px 4px rgba(0,0,0,.8);
+  text-shadow:0 1px 4px rgba(0,0,0,.8);will-change:transform;
 }
 .sat-label{font-size:8px;color:rgba(212,217,227,.5)}
 .galaxy-label{font-size:11px;color:rgba(255,220,180,.8);font-weight:500;text-shadow:0 0 8px rgba(255,180,100,.4)}
