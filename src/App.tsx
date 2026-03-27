@@ -88,27 +88,33 @@ const PR = PROBES.map((p, idx) => {
   return { n: p.name, cn: p.nameCn, col: h2n(p.color), dist: fb.distance, ang: fb.angle, y: (idx % 3 - 1) * 6, desc: p.desc, launched: p.launched, orb: undefined as number | undefined, od: 0, emoji: p.emoji };
 });
 
-// Stable component — defined outside App to prevent remount on re-render
-function CfgSlider({ label, min, max, step, defaultValue, cfgKey }: { label: string; min: number; max: number; step: number; defaultValue: number; cfgKey: string }) {
-  const [val, setVal] = useState(defaultValue);
+// Settings slider — reads/writes window.__cfg directly, no React state, no re-renders
+function CfgSlider({ label, min, max, step, cfgKey }: { label: string; min: number; max: number; step: number; cfgKey: string }) {
+  const valRef = useRef<HTMLSpanElement>(null);
+  const cfg = (window as any).__cfg;
+  const current = cfg?.[cfgKey] ?? 0;
   return (
     <div className="settings-row">
-      <div className="settings-label"><span>{label}</span><span className="settings-val">{val}</span></div>
-      <input type="range" min={min} max={max} step={step} value={val} onChange={e => {
+      <div className="settings-label"><span>{label}</span><span className="settings-val" ref={valRef}>{current}</span></div>
+      <input type="range" min={min} max={max} step={step} defaultValue={current} onChange={e => {
         const v = parseFloat(e.target.value);
-        setVal(v);
-        if ((window as any).__cfg) (window as any).__cfg[cfgKey] = v;
+        if (cfg) cfg[cfgKey] = v;
+        if (valRef.current) valRef.current.textContent = String(v);
       }} />
     </div>
   );
 }
 
 function VolSlider({ label, min, max, step, defaultValue, onChange }: { label: string; min: number; max: number; step: number; defaultValue: number; onChange: (v: number) => void }) {
-  const [val, setVal] = useState(defaultValue);
+  const valRef = useRef<HTMLSpanElement>(null);
   return (
     <div className="settings-row">
-      <div className="settings-label"><span>{label}</span><span className="settings-val">{val}</span></div>
-      <input type="range" min={min} max={max} step={step} value={val} onChange={e => { const v = parseFloat(e.target.value); setVal(v); onChange(v); }} />
+      <div className="settings-label"><span>{label}</span><span className="settings-val" ref={valRef}>{defaultValue}</span></div>
+      <input type="range" min={min} max={max} step={step} defaultValue={defaultValue} onChange={e => {
+        const v = parseFloat(e.target.value);
+        onChange(v);
+        if (valRef.current) valRef.current.textContent = String(v);
+      }} />
     </div>
   );
 }
@@ -2517,20 +2523,20 @@ export default function App() {
                 </div>
                 <div className="sat-content-divider" />
                 <div style={{ fontSize: 10, color: 'var(--glow)', marginBottom: 4 }}>行星轨道</div>
-                <CfgSlider label="线宽" min={0.5} max={4} step={0.1} defaultValue={1.5} cfgKey="planetOrbitWidth" />
-                <CfgSlider label="亮度" min={0} max={1} step={0.05} defaultValue={0.45} cfgKey="planetOrbitOpacity" />
-                <CfgSlider label="消失距离" min={100} max={2000} step={50} defaultValue={800} cfgKey="planetOrbitHideDist" />
+                <CfgSlider label="线宽" min={0.5} max={4} step={0.1} cfgKey="planetOrbitWidth" />
+                <CfgSlider label="亮度" min={0} max={1} step={0.05} cfgKey="planetOrbitOpacity" />
+                <CfgSlider label="消失距离" min={100} max={2000} step={50} cfgKey="planetOrbitHideDist" />
                 <div className="sat-content-divider" />
                 <div style={{ fontSize: 10, color: 'var(--glow)', marginBottom: 4 }}>天然卫星轨道</div>
-                <CfgSlider label="线宽" min={0.5} max={3} step={0.1} defaultValue={1} cfgKey="moonOrbitWidth" />
-                <CfgSlider label="亮度" min={0} max={1} step={0.05} defaultValue={0.45} cfgKey="moonOrbitOpacity" />
-                <CfgSlider label="消失距离" min={50} max={500} step={10} defaultValue={300} cfgKey="moonOrbitHideDist" />
+                <CfgSlider label="线宽" min={0.5} max={3} step={0.1} cfgKey="moonOrbitWidth" />
+                <CfgSlider label="亮度" min={0} max={1} step={0.05} cfgKey="moonOrbitOpacity" />
+                <CfgSlider label="消失距离" min={50} max={500} step={10} cfgKey="moonOrbitHideDist" />
                 <div className="sat-content-divider" />
                 <div style={{ fontSize: 10, color: 'var(--glow)', marginBottom: 4 }}>辅助框与可见性</div>
-                <CfgSlider label="行星辅助框大小" min={10} max={36} step={1} defaultValue={18} cfgKey="helperSize" />
-                <CfgSlider label="行星名称可见性" min={500} max={20000} step={500} defaultValue={5000} cfgKey="labelHideFrac" />
-                <CfgSlider label="天然卫星可见性" min={500} max={5000} step={100} defaultValue={2000} cfgKey="moonLabelHideFrac" />
-                <CfgSlider label="辅助框可见性" min={500} max={20000} step={500} defaultValue={5000} cfgKey="helperHideFrac" />
+                <CfgSlider label="行星辅助框大小" min={10} max={36} step={1} cfgKey="helperSize" />
+                <CfgSlider label="行星名称可见性" min={500} max={20000} step={500} cfgKey="labelHideFrac" />
+                <CfgSlider label="天然卫星可见性" min={500} max={5000} step={100} cfgKey="moonLabelHideFrac" />
+                <CfgSlider label="辅助框可见性" min={500} max={20000} step={500} cfgKey="helperHideFrac" />
               </>)}
 
               {settingsTab === 'sats' && (<>
@@ -2540,13 +2546,13 @@ export default function App() {
                 </div>
                 <div className="sat-content-divider" />
                 <div style={{ fontSize: 10, color: 'var(--glow)', marginBottom: 4 }}>轨道与轨迹</div>
-                <CfgSlider label="轨道亮度" min={0} max={0.5} step={0.01} defaultValue={0.15} cfgKey="satOrbitOpacity" />
-                <CfgSlider label="轨迹亮度" min={0} max={1} step={0.05} defaultValue={0.6} cfgKey="satTrailOpacity" />
+                <CfgSlider label="轨道亮度" min={0} max={0.5} step={0.01} cfgKey="satOrbitOpacity" />
+                <CfgSlider label="轨迹亮度" min={0} max={1} step={0.05} cfgKey="satTrailOpacity" />
                 <div className="sat-content-divider" />
                 <div style={{ fontSize: 10, color: 'var(--glow)', marginBottom: 4 }}>标记与可见性</div>
-                <CfgSlider label="选择框大小" min={6} max={24} step={1} defaultValue={12} cfgKey="bracketSize" />
-                <CfgSlider label="名称可见性" min={50} max={2000} step={50} defaultValue={100} cfgKey="satLabelHideFrac" />
-                <CfgSlider label="选择框可见性" min={50} max={2000} step={50} defaultValue={100} cfgKey="satBracketHideFrac" />
+                <CfgSlider label="选择框大小" min={6} max={24} step={1} cfgKey="bracketSize" />
+                <CfgSlider label="名称可见性" min={50} max={2000} step={50} cfgKey="satLabelHideFrac" />
+                <CfgSlider label="选择框可见性" min={50} max={2000} step={50} cfgKey="satBracketHideFrac" />
               </>)}
 
               {settingsTab === 'general' && (<>
