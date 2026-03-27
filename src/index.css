@@ -307,6 +307,14 @@ canvas{display:block;position:fixed;inset:0;z-index:1}
   opacity:.6;transition:opacity .2s;will-change:translate;
 }
 .sat-bracket:hover{opacity:1;transform:scale(1.5)}
+.sat-bracket-name{
+  position:absolute;bottom:100%;left:50%;transform:translateX(-50%);
+  margin-bottom:3px;
+  white-space:nowrap;font-size:8px;font-family:var(--font-cn),var(--font-mono),monospace;
+  color:rgba(212,217,227,.5);pointer-events:none;
+  text-shadow:0 0 3px rgba(0,0,0,.8);
+}
+.sat-bracket:hover .sat-bracket-name{color:rgba(212,217,227,.9)}
 
 /* ═══════ PLANET/MOON SELECTION HELPERS ═══════ */
 .obj-helper{
@@ -320,7 +328,7 @@ canvas{display:block;position:fixed;inset:0;z-index:1}
   position:absolute;bottom:100%;left:50%;transform:translateX(-50%);
   margin-bottom:4px;
   white-space:nowrap;font-size:11px;font-family:var(--font-cn),var(--font-mono),monospace;
-  pointer-events:none;opacity:0;transition:opacity .2s;
+  pointer-events:none;opacity:.7;transition:opacity .2s;
   text-shadow:0 0 4px rgba(0,0,0,.8);
 }
 .obj-helper:hover .obj-helper-name{opacity:1}

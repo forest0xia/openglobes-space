@@ -4,157 +4,21 @@ import { PLANETS } from './data/planets';
 import { NATURAL_MOONS, MOON_COUNTS } from './data/moons';
 import { PROBES } from './data/probesMeta';
 import { fetchAllSatellites, fetchStarlinkSatellites, getSatPositionECI, eciToScene, SAT_GROUPS, type SatRecord } from './services/celestrak';
-import { createSatelliteModel } from './utils/satModel';
+import { createSatelliteModel } from './utils/satModel'; // only used for focused satellite detail model
 import { createProbeModel } from './utils/probeModels';
 import { createTrailMaterial, createTrailIndexAttribute } from './utils/trailShader';
 import { getSatDisplayName } from './data/satNames';
 import { Line2 } from 'three/examples/jsm/lines/Line2.js';
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
 import { LineGeometry } from 'three/examples/jsm/lines/LineGeometry.js';
+import { h2n, darkenHex, TRACKS_LIST, BASE, SPEED_PRESETS, TEX_FILES, procTex, P, PR } from './config/constants';
+import { addAtmosphere, addSurfaceAtmo, PLANET_ATMO_CONFIGS } from './shaders/atmosphere';
+import { CfgStepper, VolStepper, CfgToggle } from './components/Controls';
+import { Timebar } from './components/Timebar';
+import { InfoPanel } from './components/InfoPanel';
+import { getScreenSize, isOccludedByPlanet } from './scene/overlays';
 
-const h2n = (h: string) => parseInt(h.replace('#', ''), 16);
-// Darken a hex color by a factor (simulates opacity against black background, avoids Line2 transparency artifacts)
-const darkenHex = (hex: number, f: number) => {
-  const r = ((hex >> 16) & 0xff) * f;
-  const g = ((hex >> 8) & 0xff) * f;
-  const b = (hex & 0xff) * f;
-  return (Math.round(r) << 16) | (Math.round(g) << 8) | Math.round(b);
-};
-
-const TRACKS_LIST = [
-  { file: 'space-ambient.mp3', name: '深空漂流' },
-  { file: 'cosmic-drift.mp3', name: '星际穿越' },
-  { file: 'stellar-pulse.mp3', name: '脉冲星' },
-  { file: 'solar-wind.mp3', name: '太阳风' },
-  { file: 'deep-nebula.mp3', name: '星云深处' },
-];
-const BASE = import.meta.env.BASE_URL;
-
-const SPEED_PRESETS = [
-  { v: 1, label: '1秒' }, { v: 15, label: '15秒' }, { v: 30, label: '30秒' },
-  { v: 60, label: '1分钟' }, { v: 300, label: '5分钟' }, { v: 900, label: '15分钟' },
-  { v: 1800, label: '30分钟' }, { v: 3600, label: '1小时' }, { v: 7200, label: '2小时' },
-  { v: 21600, label: '6小时' }, { v: 43200, label: '12小时' }, { v: 86400, label: '1天' },
-  { v: 172800, label: '2天' }, { v: 259200, label: '3天' }, { v: 604800, label: '1周' },
-  { v: 1209600, label: '2周' }, { v: 2592000, label: '1个月' }, { v: 7776000, label: '3个月' },
-  { v: 15552000, label: '6个月' }, { v: 31557600, label: '1年' },
-];
-
-// Texture file map — loaded from public/textures/
-const TEX_FILES: Record<string, string> = {
-  sun: 'sun.jpg', mercury: 'mercury.jpg', venus: 'venus.jpg',
-  earth: 'earth_day.jpg', mars: 'mars.jpg', jupiter: 'jupiter.jpg',
-  saturn: 'saturn.jpg', uranus: 'uranus.jpg', neptune: 'neptune.jpg',
-  moon: 'moon.jpg',
-};
-
-// Procedural fallback texture
-function procTex(color: number, type: 'sun' | 'gas' | 'rock') {
-  const c = document.createElement('canvas'); c.width = 256; c.height = 128;
-  const x = c.getContext('2d')!;
-  const R = (color >> 16) & 0xFF, G = (color >> 8) & 0xFF, B = color & 0xFF;
-  if (type === 'sun') {
-    const gr = x.createRadialGradient(128, 64, 8, 128, 64, 128);
-    gr.addColorStop(0, `rgb(${Math.min(255, R + 80)},${Math.min(255, G + 50)},${B})`);
-    gr.addColorStop(.4, `rgb(${R},${G},${B})`);
-    gr.addColorStop(1, `rgb(${Math.max(0, R - 50)},${Math.max(0, G - 40)},0)`);
-    x.fillStyle = gr; x.fillRect(0, 0, 256, 128);
-    for (let i = 0; i < 35; i++) { x.beginPath(); x.arc(Math.random() * 256, Math.random() * 128, Math.random() * 16 + 3, 0, Math.PI * 2); x.fillStyle = `rgba(255,${180 + Math.random() * 75 | 0},0,${Math.random() * .25})`; x.fill(); }
-  } else if (type === 'gas') {
-    x.fillStyle = `rgb(${R},${G},${B})`; x.fillRect(0, 0, 256, 128);
-    for (let y = 0; y < 128; y += 2) { const v = Math.sin(y * .12 + Math.random()) * 22; x.fillStyle = `rgba(${Math.max(0, Math.min(255, R + v))},${Math.max(0, Math.min(255, G + v * .6))},${Math.max(0, Math.min(255, B + v * .4))},.35)`; x.fillRect(0, y, 256, 2); }
-  } else {
-    x.fillStyle = `rgb(${R},${G},${B})`; x.fillRect(0, 0, 256, 128);
-    for (let i = 0; i < 70; i++) { x.beginPath(); x.arc(Math.random() * 256, Math.random() * 128, Math.random() * 6 + 1, 0, Math.PI * 2); x.fillStyle = `rgba(${Math.max(0, R - 35)},${Math.max(0, G - 35)},${Math.max(0, B - 35)},${Math.random() * .3})`; x.fill(); }
-  }
-  const t = new THREE.CanvasTexture(c); t.wrapS = THREE.RepeatWrapping; return t;
-}
-
-const P = PLANETS.map(p => ({
-  id: p.id, n: p.name, cn: p.nameCn.split('—')[0].trim(), cnFull: p.nameCn, col: h2n(p.color),
-  r: p.radius, d: p.distance, s: p.speed, tilt: p.tilt, rotP: p.rotationPeriod,
-  sun: p.isSun ? 1 : 0, gas: p.textureType === 'gas' ? 1 : 0, ring: p.hasRing ? 1 : 0,
-  stats: p.stats, fact: p.fact, texType: p.textureType,
-  eccentricity: p.eccentricity ?? 0, orbitalIncl: p.orbitalIncl ?? 0,
-  argPerihelion: p.argPerihelion ?? 0, longAscNode: p.longAscNode ?? 0,
-}));
-
-const PR = PROBES.map((p, idx) => {
-  const fb = p.fallbackPosition;
-  if ('orbitPlanetId' in fb) {
-    const pi = PLANETS.findIndex(pp => pp.id === fb.orbitPlanetId);
-    return { n: p.name, cn: p.nameCn, col: h2n(p.color), orb: pi, od: fb.orbitDist, desc: p.desc, launched: p.launched, dist: 0, ang: 0, y: 0, emoji: p.emoji };
-  }
-  return { n: p.name, cn: p.nameCn, col: h2n(p.color), dist: fb.distance, ang: fb.angle, y: (idx % 3 - 1) * 6, desc: p.desc, launched: p.launched, orb: undefined as number | undefined, od: 0, emoji: p.emoji };
-});
-
-// Settings stepper — pure DOM, no React state, no continuous onChange
-function CfgStepper({ label, min, max, step, cfgKey }: { label: string; min: number; max: number; step: number; cfgKey: string }) {
-  const valRef = useRef<HTMLSpanElement>(null);
-  const cfg = (window as any).__cfg;
-  const update = (dir: number) => {
-    if (!cfg) return;
-    const v = Math.round(Math.max(min, Math.min(max, (cfg[cfgKey] ?? 0) + dir * step)) * 1000) / 1000;
-    cfg[cfgKey] = v;
-    if (valRef.current) valRef.current.textContent = String(v);
-  };
-  return (
-    <div className="stepper-row">
-      <span className="stepper-label">{label}</span>
-      <div className="stepper-ctrl">
-        <button className="stepper-btn" onClick={() => update(-1)}>−</button>
-        <span className="stepper-val" ref={valRef}>{cfg?.[cfgKey] ?? 0}</span>
-        <button className="stepper-btn" onClick={() => update(1)}>+</button>
-      </div>
-    </div>
-  );
-}
-
-function VolStepper({ label, min, max, step, defaultValue, onChange }: { label: string; min: number; max: number; step: number; defaultValue: number; onChange: (v: number) => void }) {
-  const valRef = useRef<HTMLSpanElement>(null);
-  const curRef = useRef(defaultValue);
-  const update = (dir: number) => {
-    const v = Math.round(Math.max(min, Math.min(max, curRef.current + dir * step)) * 1000) / 1000;
-    curRef.current = v;
-    onChange(v);
-    if (valRef.current) valRef.current.textContent = String(v);
-  };
-  return (
-    <div className="stepper-row">
-      <span className="stepper-label">{label}</span>
-      <div className="stepper-ctrl">
-        <button className="stepper-btn" onClick={() => update(-1)}>−</button>
-        <span className="stepper-val" ref={valRef}>{defaultValue}</span>
-        <button className="stepper-btn" onClick={() => update(1)}>+</button>
-      </div>
-    </div>
-  );
-}
-
-// Toggle that reads/writes window.__cfg — survives panel remount
-function CfgToggle({ label, cfgKey, onToggle }: { label: string; cfgKey: string; onToggle?: () => void }) {
-  const cfg = (window as any).__cfg;
-  const inputRef = useRef<HTMLInputElement>(null);
-  useEffect(() => {
-    if (inputRef.current) inputRef.current.checked = cfg?.[cfgKey] ?? false;
-  });
-  return (
-    <label className="mobile-toggle">
-      <input type="checkbox" ref={inputRef} onChange={() => {
-        if (onToggle) {
-          // onToggle handles both local var and cfg
-          onToggle();
-        } else {
-          // No callback — toggle cfg directly
-          if (cfg) cfg[cfgKey] = !cfg[cfgKey];
-        }
-        // Sync checkbox with cfg (onToggle may have changed it)
-        if (inputRef.current && cfg) inputRef.current.checked = cfg[cfgKey];
-      }} />
-      <span>{label}</span>
-    </label>
-  );
-}
+// Constants, data transforms, and UI components imported from extracted modules
 
 export default function App() {
   const canvasRef = useRef<HTMLDivElement>(null);
@@ -173,7 +37,7 @@ export default function App() {
   const satCountRef = useRef<HTMLSpanElement>(null);
   const lSatRef = useRef<HTMLButtonElement>(null);
   // (lProbeRef removed — probe toggle is now in satellite panel)
-  const labelsRef = useRef<HTMLDivElement>(null);
+  // labelsRef removed — labels integrated into helper system
   const satBracketsRef = useRef<HTMLDivElement>(null);
   const helpersRef = useRef<HTMLDivElement>(null);
   const [satListOpen, setSatListOpen] = useState(false);
@@ -187,26 +51,27 @@ export default function App() {
     if (except !== 'info') infoRef.current?.classList.remove('open');
   };
   (window as any).__closeAllPanels = closeAllPanels;
-  (window as any).__showInfoHint = () => { setInfoHint(true); };
-  (window as any).__openInfo = () => { closeAllPanels('info'); infoRef.current?.classList.add('open'); setInfoHint(false); };
+  const infoHintRef = useRef<HTMLButtonElement>(null);
+  (window as any).__showInfoHint = () => { if (infoHintRef.current) infoHintRef.current.style.display = 'block'; };
+  (window as any).__openInfo = () => { closeAllPanels('info'); infoRef.current?.classList.add('open'); if (infoHintRef.current) infoHintRef.current.style.display = 'none'; };
   const [toast, setToast] = useState<{ title: string; text: string } | null>(null);
   const [satTab, setSatTab] = useState('beidou');
   const [settingsTab, setSettingsTab] = useState('planets');
-  const [infoHint, setInfoHint] = useState(false);
+  // infoHint is DOM-driven (not React state) to avoid full App re-renders on every planet click
   const [showStatus, setShowStatus] = useState(typeof window !== 'undefined' && window.innerWidth > 768);
   const [starlinkLoading, setStarlinkLoading] = useState(false);
   const [starlinkProgress, setStarlinkProgress] = useState(0);
   const [starlinkTotal, setStarlinkTotal] = useState(0);
   const [probesVisible, setProbesVisible] = useState(false);
   const [satellites, setSatellites] = useState<SatRecord[]>([]);
-  const [satGroups, setSatGroups] = useState<Record<string, boolean>>({ beidou: true, stations: false, gps: false, starlink: false, visual: false, weather: false, resource: false, science: true, geodetic: false });
+  const [satGroups, setSatGroups] = useState<Record<string, boolean>>({ beidou: true, weather: true, stations: false, starlink: false, gps: false, visual: false, resource: false, science: false, geodetic: false });
 
   // Store refs accessible from inside useEffect
   const satDataRef = useRef<{
     sats: SatRecord[]; meshes: (THREE.Mesh | null)[]; groups: Record<string, boolean>;
-    orbitLines: THREE.Line[]; trailLines: (THREE.Line | null)[];
+    orbitLines: THREE.Line[];
     starlinkMesh?: THREE.InstancedMesh; starlinkSats?: SatRecord[]; starlinkPositions?: Float32Array;
-  }>({ sats: [], meshes: [], groups: { beidou: true, stations: false, gps: false, starlink: false, visual: false, weather: false, resource: false, science: true, geodetic: false }, orbitLines: [], trailLines: [] });
+  }>({ sats: [], meshes: [], groups: { beidou: true, weather: true, stations: false, starlink: false, gps: false, visual: false, resource: false, science: false, geodetic: false }, orbitLines: [] });
 
   useEffect(() => {
     // Tunable settings — exposed on window for UI sliders
@@ -405,172 +270,17 @@ export default function App() {
       const segs = (p.id === 'earth' || p.id === 'jupiter' || p.id === 'saturn') ? 64 : 48;
       const m = new THREE.Mesh(new THREE.SphereGeometry(p.r, segs, segs), mat);
 
-      // Atmosphere glow — based on Three.js official Earth example (webgpu_tsl_earth)
-      // Ported from TSL to GLSL: BackSide sphere, fresnel remap, sun-aware color blend
-      const ATMO_VERT = `
-        varying vec3 vNormalW;
-        varying vec3 vPosW;
-        void main() {
-          vNormalW = normalize((modelMatrix * vec4(normal, 0.0)).xyz);
-          vPosW = (modelMatrix * vec4(position, 1.0)).xyz;
-          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-        }
-      `;
-      const ATMO_FRAG = `
-        uniform vec3 dayColor;
-        uniform vec3 twilightColor;
-        uniform vec3 sunPos;
-        uniform vec3 camPos;
-        uniform float fresnelLow;   // remap lower edge (default 0.73)
-        uniform float fresnelPow;   // pow exponent (default 3.0)
-        uniform float sunFadeMin;   // smoothstep min (default -0.5)
-        uniform float sunFadeMax;   // smoothstep max (default 1.0)
-        uniform float isSun;
-        varying vec3 vNormalW;
-        varying vec3 vPosW;
-        void main() {
-          vec3 viewDir = normalize(vPosW - camPos);
-          vec3 n = normalize(vNormalW);
-          float fresnel = 1.0 - abs(dot(viewDir, n));
-
-          if (isSun > 0.5) {
-            // Sun: simple radial glow, no sun-awareness
-            float alpha = pow(max(1.0 - (fresnel - fresnelLow) / (1.0 - fresnelLow), 0.0), fresnelPow);
-            gl_FragColor = vec4(dayColor, alpha);
-            return;
-          }
-
-          vec3 sunDir = normalize(sunPos - vPosW);
-          float sunOrientation = dot(n, sunDir);
-
-          // Color: blend twilight → day based on sun angle
-          vec3 atmosphereColor = mix(twilightColor, dayColor, smoothstep(-0.25, 0.75, sunOrientation));
-
-          // Alpha: remap fresnel — visible at rim, transparent at very edge
-          float remapped = 1.0 - (fresnel - fresnelLow) / (1.0 - fresnelLow);
-          float alpha = pow(max(remapped, 0.0), fresnelPow);
-
-          // Sun modulation: fade out on shadow side
-          alpha *= smoothstep(sunFadeMin, sunFadeMax, sunOrientation);
-
-          gl_FragColor = vec4(atmosphereColor, alpha);
-        }
-      `;
-
-      interface AtmoCfg {
-        scale: number;
-        dayColor: [number, number, number];
-        twilightColor: [number, number, number];
-        fresnelLow: number;
-        fresnelPow: number;
-        sunFadeMin: number;
-        sunFadeMax: number;
-        isSun?: boolean;
-      }
-      function addAtmosphere(parent: THREE.Mesh, cfg: AtmoCfg) {
-        const mat = new THREE.ShaderMaterial({
-          uniforms: {
-            dayColor: { value: new THREE.Vector3(...cfg.dayColor) },
-            twilightColor: { value: new THREE.Vector3(...cfg.twilightColor) },
-            sunPos: { value: new THREE.Vector3() },
-            camPos: { value: new THREE.Vector3() },
-            fresnelLow: { value: cfg.fresnelLow },
-            fresnelPow: { value: cfg.fresnelPow },
-            sunFadeMin: { value: cfg.sunFadeMin },
-            sunFadeMax: { value: cfg.sunFadeMax },
-            isSun: { value: cfg.isSun ? 1.0 : 0.0 },
-          },
-          vertexShader: ATMO_VERT,
-          fragmentShader: ATMO_FRAG,
-          side: THREE.BackSide,
-          transparent: true,
-          depthWrite: false,
-        });
-        const gm = new THREE.Mesh(new THREE.SphereGeometry(p.r * cfg.scale, 32, 32), mat);
-        gm.userData.isGlow = true;
-        gm.userData.glowMat = mat;
+      // Atmosphere glow — from extracted shaders/atmosphere.ts
+      const atmoCfg = PLANET_ATMO_CONFIGS[p.id];
+      if (atmoCfg) {
+        const gm = addAtmosphere(m, atmoCfg.atmosphere, p.r);
         gm.userData.planetId = p.id;
-        parent.add(gm);
         glowMeshes.push(gm);
-      }
-
-      // Surface atmosphere haze — FrontSide, covers sunlit hemisphere
-      // Matches Three.js example: atmosphereMix = fresnel^2 * smoothstep(-0.5, 1, sunOrientation)
-      const SURFACE_ATMO_FRAG = `
-        uniform vec3 dayColor;
-        uniform vec3 twilightColor;
-        uniform vec3 sunPos;
-        uniform vec3 camPos;
-        uniform float strength;
-        varying vec3 vNormalW;
-        varying vec3 vPosW;
-        void main() {
-          vec3 viewDir = normalize(vPosW - camPos);
-          vec3 n = normalize(vNormalW);
-          vec3 sunDir = normalize(sunPos - vPosW);
-          float fresnel = 1.0 - abs(dot(viewDir, n));
-          float sunOrientation = dot(n, sunDir);
-          vec3 atmoColor = mix(twilightColor, dayColor, smoothstep(-0.25, 0.75, sunOrientation));
-          float atmosphereMix = fresnel * fresnel * smoothstep(-0.5, 1.0, sunOrientation) * strength;
-          gl_FragColor = vec4(atmoColor, atmosphereMix);
+        if (atmoCfg.surfaceAtmo) {
+          const sm2 = addSurfaceAtmo(m, atmoCfg.surfaceAtmo.dayColor, atmoCfg.surfaceAtmo.twilightColor, atmoCfg.surfaceAtmo.strength, p.r);
+          sm2.userData.planetId = p.id;
+          glowMeshes.push(sm2);
         }
-      `;
-      function addSurfaceAtmo(parent: THREE.Mesh, dayCol: [number,number,number], twiCol: [number,number,number], strength: number) {
-        const mat = new THREE.ShaderMaterial({
-          uniforms: {
-            dayColor: { value: new THREE.Vector3(...dayCol) },
-            twilightColor: { value: new THREE.Vector3(...twiCol) },
-            sunPos: { value: new THREE.Vector3() },
-            camPos: { value: new THREE.Vector3() },
-            strength: { value: strength },
-          },
-          vertexShader: ATMO_VERT,
-          fragmentShader: SURFACE_ATMO_FRAG,
-          side: THREE.FrontSide,
-          transparent: true,
-          depthWrite: false,
-        });
-        const gm = new THREE.Mesh(new THREE.SphereGeometry(p.r * 1.01, 32, 32), mat);
-        gm.renderOrder = 999;
-        gm.userData.isGlow = true;
-        gm.userData.glowMat = mat;
-        gm.userData.planetId = p.id;
-        parent.add(gm);
-        glowMeshes.push(gm);
-      }
-
-      // Parameters from Three.js official example + tuned per planet
-      if (p.sun) {
-        addAtmosphere(m, { scale: 1.15, dayColor: [1, .85, .3], twilightColor: [1, .4, .1],
-          fresnelLow: 0.5, fresnelPow: 2.0, sunFadeMin: -1, sunFadeMax: 1, isSun: true });
-      } else if (p.id === 'earth') {
-        addAtmosphere(m, { scale: 1.04, dayColor: [.3, .7, 1], twilightColor: [.74, .29, .04],
-          fresnelLow: 0.73, fresnelPow: 3.0, sunFadeMin: -0.5, sunFadeMax: 1.0 });
-        addSurfaceAtmo(m, [.3, .7, 1], [.74, .29, .04], 0.7);
-      } else if (p.id === 'venus') {
-        addAtmosphere(m, { scale: 1.06, dayColor: [.9, .75, .4], twilightColor: [.8, .4, .1],
-          fresnelLow: 0.65, fresnelPow: 2.5, sunFadeMin: -0.5, sunFadeMax: 1.0 });
-        addSurfaceAtmo(m, [.9, .75, .4], [.8, .4, .1], 0.6);
-      } else if (p.id === 'mars') {
-        addAtmosphere(m, { scale: 1.03, dayColor: [.8, .5, .3], twilightColor: [.6, .2, .05],
-          fresnelLow: 0.75, fresnelPow: 3.5, sunFadeMin: -0.5, sunFadeMax: 1.0 });
-        addSurfaceAtmo(m, [.8, .5, .3], [.6, .2, .05], 0.3);
-      } else if (p.id === 'jupiter') {
-        addAtmosphere(m, { scale: 1.05, dayColor: [.8, .65, .35], twilightColor: [.6, .3, .1],
-          fresnelLow: 0.7, fresnelPow: 3.0, sunFadeMin: -0.5, sunFadeMax: 1.0 });
-        addSurfaceAtmo(m, [.8, .65, .35], [.6, .3, .1], 0.5);
-      } else if (p.id === 'saturn') {
-        addAtmosphere(m, { scale: 1.05, dayColor: [.9, .8, .5], twilightColor: [.7, .4, .1],
-          fresnelLow: 0.7, fresnelPow: 3.0, sunFadeMin: -0.5, sunFadeMax: 1.0 });
-        addSurfaceAtmo(m, [.9, .8, .5], [.7, .4, .1], 0.5);
-      } else if (p.id === 'uranus') {
-        addAtmosphere(m, { scale: 1.04, dayColor: [.4, .75, .85], twilightColor: [.2, .4, .5],
-          fresnelLow: 0.72, fresnelPow: 3.0, sunFadeMin: -0.5, sunFadeMax: 1.0 });
-        addSurfaceAtmo(m, [.4, .75, .85], [.2, .4, .5], 0.5);
-      } else if (p.id === 'neptune') {
-        addAtmosphere(m, { scale: 1.04, dayColor: [.25, .4, .9], twilightColor: [.15, .1, .5],
-          fresnelLow: 0.72, fresnelPow: 3.0, sunFadeMin: -0.5, sunFadeMax: 1.0 });
-        addSurfaceAtmo(m, [.25, .4, .9], [.15, .1, .5], 0.5);
       }
 
       // Earth: atmosphere + clouds as CHILDREN — they inherit scale/position automatically.
@@ -780,22 +490,26 @@ export default function App() {
       sd.orbitLines.forEach(ol => { scene.remove(ol); ol.geometry.dispose(); (ol.material as THREE.Material).dispose(); });
       sd.orbitLines = [];
       const visibleSats = sd.sats.filter(s => sd.groups[s.groupId]);
-      const now = new Date(simStartMs + t * 1000);
+      // Use REAL time (not sim time) — SGP4 accuracy degrades far from TLE epoch
+      const now = new Date();
       const lines: THREE.Line[] = [];
+      const orbitSc = baseScale(EARTH_IDX);
       visibleSats.forEach(sat => {
         const sr = sat.satrec as any;
         const periodMin = sr.no ? (2 * Math.PI / sr.no) : 90;
+        // More points for larger orbits (GEO/MEO need smoother curves)
+        const nPts = periodMin > 300 ? 128 : periodMin > 120 ? 96 : 64;
         const pts: THREE.Vector3[] = [];
-        for (let s = 0; s <= 48; s++) {
-          const d = new Date(now.getTime() + (s / 48) * periodMin * 60000);
+        for (let s = 0; s <= nPts; s++) {
+          const d = new Date(now.getTime() + (s / nPts) * periodMin * 60000);
           const eci = getSatPositionECI(sat, d);
           if (!eci) continue;
-          const pos = eciToScene(eci, { x: 0, y: 0, z: 0 }, earthSceneR, 1);
+          const pos = eciToScene(eci, { x: 0, y: 0, z: 0 }, earthSceneR, orbitSc);
           pts.push(new THREE.Vector3(pos.x, pos.y, pos.z));
         }
         if (pts.length > 2) {
           const geo = new THREE.BufferGeometry().setFromPoints(pts);
-          const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: sat.color, transparent: true, opacity: .15 }));
+          const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: sat.color, transparent: true, opacity: .65 }));
           line.userData = { isSatOrbit: true, groupId: sat.groupId };
           scene.add(line);
           lines.push(line);
@@ -826,7 +540,7 @@ export default function App() {
     const earthP = P.find(p => p.id === 'earth')!;
     const earthSceneR = earthP.r;
 
-    const TRAIL_LEN = 30;
+    const TRAIL_LEN = 80;
     const satTrails: (Float32Array | null)[] = [];
     const satTrailLines: (THREE.Line | null)[] = [];
     const satTrailReady: boolean[] = [];
@@ -835,19 +549,29 @@ export default function App() {
     const satFrozen: boolean[] = [];       // true = orbit drifted, position frozen
 
     // ═══ Satellite resource lifecycle: create on demand, dispose when off ═══
-    let satLabelBaseIdx = 0; // set after planet/moon/probe labels are created
+    // Satellite names shown via bracket hover — no separate label system
+    // Shared geometry + cached materials for all non-Starlink satellites
+    // All satellites look identical at normal zoom (sub-pixel), no need for individual GLB models
+    const _satSharedGeo = new THREE.BoxGeometry(1, 0.6, 0.6); // unit box, scaled per-satellite
+    const _satMatCache = new Map<number, THREE.MeshBasicMaterial>();
+    function getSatMaterial(color: number): THREE.MeshBasicMaterial {
+      let mat = _satMatCache.get(color);
+      if (!mat) { mat = new THREE.MeshBasicMaterial({ color }); _satMatCache.set(color, mat); }
+      return mat;
+    }
 
     function materializeSat(i: number) {
       const sat = satDataRef.current.sats[i];
-      if (!sat || satMeshes[i]) return; // already materialized
+      if (!sat || satMeshes[i]) return;
       const displayName = getSatDisplayName(sat.name, sat.noradId);
       const colNum = typeof sat.color === 'string' ? parseInt(sat.color.replace('#', ''), 16) : sat.color;
-      const sm = createSatelliteModel(colNum, sat.groupId) as any as THREE.Mesh;
+      // Shared geometry + cached material (1 geometry for ALL sats, 1 material per color)
+      const sm = new THREE.Mesh(_satSharedGeo, getSatMaterial(colNum));
       sm.userData = { isSat: true, name: sat.name, displayName, groupId: sat.groupId, color: sat.color, satIdx: i };
       sm.visible = false;
       scene.add(sm);
       satMeshes[i] = sm;
-      // Trail
+      // Per-satellite trail line (THREE.Line + fading shader)
       const trailArr = new Float32Array(TRAIL_LEN * 3);
       satTrails[i] = trailArr;
       satTrailReady[i] = false;
@@ -855,88 +579,109 @@ export default function App() {
       trailGeo.setAttribute('position', new THREE.BufferAttribute(trailArr, 3));
       trailGeo.setAttribute('trailIndex', createTrailIndexAttribute(TRAIL_LEN));
       trailGeo.setDrawRange(0, 0);
-      const trailMat = createTrailMaterial('#ffffff');
-      const trailLine = new THREE.Line(trailGeo, trailMat);
+      const tMat = createTrailMaterial('#ffffff');
+      const trailLine = new THREE.Line(trailGeo, tMat);
       trailLine.visible = false;
       trailLine.frustumCulled = false;
       scene.add(trailLine);
       satTrailLines[i] = trailLine;
-      // Update label target mesh reference
-      const labelIdx = satLabelBaseIdx + i;
-      if (labelIdx < allLabelTargets.length) {
-        allLabelTargets[labelIdx].mesh = sm;
-      }
     }
 
     function dematerializeSat(i: number) {
       const sm = satMeshes[i];
       if (sm) {
         scene.remove(sm);
-        if (sm.geometry) (sm.geometry as THREE.BufferGeometry).dispose();
-        if (sm.material) {
-          const mat = sm.material;
-          if (Array.isArray(mat)) mat.forEach(m => m.dispose()); else (mat as THREE.Material).dispose();
-        }
+        // Geometry and material are SHARED — don't dispose them
         satMeshes[i] = null;
       }
       const trail = satTrailLines[i];
-      if (trail) {
-        scene.remove(trail);
-        trail.geometry.dispose();
-        const tmat = trail.material;
-        if (Array.isArray(tmat)) tmat.forEach(m => m.dispose()); else (tmat as THREE.Material).dispose();
-        satTrailLines[i] = null;
-      }
+      if (trail) { scene.remove(trail); trail.geometry.dispose(); (trail.material as THREE.Material).dispose(); satTrailLines[i] = null; }
       satTrails[i] = null;
       satTrailReady[i] = false;
-      // Null out label target
-      const labelIdx = satLabelBaseIdx + i;
-      if (labelIdx < allLabelTargets.length) {
-        allLabelTargets[labelIdx].mesh = null;
-        if (labelEls[labelIdx]) labelEls[labelIdx].style.display = 'none';
-      }
     }
 
+    // Load satellite data DURING intro (preload behind splash screen)
+    let satDataLoaded = false;
     fetchAllSatellites().then(sats => {
       setSatellites(sats);
       satDataRef.current.sats = sats;
       if (satCountRef.current) satCountRef.current.textContent = `${sats.length} 颗卫星追踪中`;
-
-      // Pre-allocate arrays (null slots for disabled groups)
       for (let i = 0; i < sats.length; i++) {
         satMeshes.push(null);
         satTrails.push(null);
-        satTrailReady.push(false);
         satTrailLines.push(null);
-        // Compute expected orbital altitude from TLE mean motion
+        satTrailReady.push(false);
         const sr = sats[i].satrec as any;
-        const n = sr.no; // rad/min
+        const n = sr.no;
         const altKm = n > 0 ? Math.pow(398600.4418 / Math.pow(n / 60, 2), 1 / 3) - 6371 : 500;
         satExpectedAltKm.push(Math.max(altKm, 100));
         satFrozen.push(false);
       }
-      // Only materialize meshes for enabled groups
       sats.forEach((sat, i) => {
-        if (satDataRef.current.groups[sat.groupId]) {
-          materializeSat(i);
-        }
+        if (satDataRef.current.groups[sat.groupId]) materializeSat(i);
       });
       satDataRef.current.meshes = satMeshes;
-      satDataRef.current.trailLines = satTrailLines;
 
-      // Add satellite labels to the label system (all sats, mesh=null for disabled)
-      satLabelBaseIdx = allLabelTargets.length;
+      // Pre-compute ALL initial satellite positions + scale during intro
+      const initNow = new Date();
+      const eIdx0 = EARTH_IDX;
+      const ep0 = meshes[eIdx0].position;
+      const sc0 = baseScale(eIdx0);
+      const initBaseSatSize = sc0 * earthSceneR * 0.0002;
+      const initMinSatSize = earthSceneR * sc0 * 0.001;
       sats.forEach((sat, i) => {
-        const dn = getSatDisplayName(sat.name, sat.noradId);
-        allLabelTargets.push({ mesh: satMeshes[i], text: dn, type: 'sat' });
-        const el = document.createElement('div');
-        el.className = 'scene-label sat-label';
-        el.textContent = dn;
-        el.style.display = 'none';
-        labelsRef.current!.appendChild(el);
-        labelEls.push(el);
+        const sm = satMeshes[i];
+        if (!sm) return;
+        const eci = getSatPositionECI(sat, initNow);
+        if (eci && isFinite(eci.x) && isFinite(eci.y) && isFinite(eci.z)) {
+          const pos = eciToScene(eci, ep0, earthSceneR, sc0);
+          sm.position.set(pos.x, pos.y, pos.z);
+          // Set correct scale immediately (same logic as animation loop)
+          const isStation = sat.groupId === 'stations';
+          const thisSize = isStation ? initBaseSatSize * 3 : initBaseSatSize;
+          sm.scale.setScalar(Math.max(thisSize, isStation ? initMinSatSize * 2 : initMinSatSize));
+          sm.visible = true;
+        }
       });
-    });
+
+      // Pre-compute initial trail positions for visible satellites
+      sats.forEach((sat, i) => {
+        if (!satTrails[i] || !satMeshes[i]?.visible) return;
+        const sr2 = sat.satrec as any;
+        const periodSec = sr2.no ? (2 * Math.PI / sr2.no) * 60 : 5400;
+        const trailDur = periodSec * 0.5;
+        const lastIdx = TRAIL_LEN - 1;
+        let allValid = true;
+        const nowMs = initNow.getTime();
+        const trailDate = new Date(nowMs);
+        for (let s = 0; s <= lastIdx; s++) {
+          trailDate.setTime(nowMs - (lastIdx - s) / lastIdx * trailDur * 1000);
+          const pastEci = getSatPositionECI(sat, trailDate);
+          if (pastEci) {
+            const pp = eciToScene(pastEci, ep0, earthSceneR, sc0);
+            satTrails[i]![s * 3] = pp.x - ep0.x;
+            satTrails[i]![s * 3 + 1] = pp.y - ep0.y;
+            satTrails[i]![s * 3 + 2] = pp.z - ep0.z;
+          } else { allValid = false; }
+        }
+        if (allValid) {
+          satTrailReady[i] = true;
+          const line = satTrailLines[i];
+          if (line) {
+            line.visible = true;
+            line.position.copy(ep0);
+            line.geometry.attributes.position.needsUpdate = true;
+            line.geometry.setDrawRange(0, TRAIL_LEN);
+            const mat = line.material as THREE.ShaderMaterial;
+            if (mat.uniforms?.activePoints) mat.uniforms.activePoints.value = TRAIL_LEN;
+          }
+        }
+      });
+
+      satDataLoaded = true;
+      const prog = document.getElementById('__introProgress');
+      if (prog) prog.textContent = '就绪';
+    }); // delay: intro (2.2s) + Earth zoom (1.5s) + buffer
 
     // Dispose Starlink InstancedMesh resources
     function disposeStarlink() {
@@ -956,7 +701,8 @@ export default function App() {
     (window as any).__toggleSatGroup = async (gid: string) => {
       const g = satDataRef.current.groups;
       g[gid] = !g[gid];
-      setSatGroups({ ...g });
+      // Only re-render if satellite panel is open (avoids full App re-render when panel closed)
+      if (document.getElementById('__satPanel')) setSatGroups({ ...g });
 
       // On-demand load for Starlink: InstancedMesh for 10,000+ satellites (single draw call, real 3D shapes)
       if (gid === 'starlink' && g[gid] && !satDataRef.current.starlinkMesh) {
@@ -1125,91 +871,15 @@ export default function App() {
       (window as any).__showInfoHint();
     };
 
-    // ═══════ LABELS ═══════
-    labelsRef.current!.innerHTML = ''; // clear on re-mount
-    let showLabels = true; // default on
-    const labelEls: HTMLDivElement[] = [];
-    const allLabelTargets: { mesh: THREE.Mesh | null; text: string; type: 'planet' | 'moon' | 'probe' | 'sat' }[] = [];
-    P.forEach((p, i) => {
-      allLabelTargets.push({ mesh: meshes[i], text: p.cn, type: 'planet' });
-    });
-    if (moonMesh) {
-      allLabelTargets.push({ mesh: moonMesh, text: '月球', type: 'moon' });
-    }
-    PR.forEach((pr, i) => {
-      allLabelTargets.push({ mesh: probeMeshes[i], text: pr.cn, type: 'probe' });
-    });
-    naturalMoonMeshes.forEach((nm, i) => {
-      allLabelTargets.push({ mesh: nm, text: naturalMoonData[i].nameCn, type: 'moon' });
-    });
-    allLabelTargets.forEach(({ text }) => {
-      const el = document.createElement('div');
-      el.className = 'scene-label';
-      el.textContent = text;
-      el.style.display = 'none';
-      labelsRef.current!.appendChild(el);
-      labelEls.push(el);
-    });
+    // ═══════ LABELS — integrated into helper system ═══════
+    // Planet/moon labels are shown via .obj-helper-name (inside helper divs).
+    // No separate label system — one DOM element per object, one positioning calculation.
+    let showLabels = true;
     (window as any).__toggleLabels = () => {
       showLabels = !showLabels;
       cfg.showLabels = showLabels;
     };
-    const labelVec = new THREE.Vector3();
-    function updateLabels() {
-      if (!showLabels) { labelEls.forEach(el => el.style.display = 'none'); return; }
-      // Pre-compute Earth screen size for satellite/moon label hiding
-      const earthIdxL = EARTH_IDX;
-      const earthScreenL = earthIdxL >= 0 ? getScreenSize(meshes[earthIdxL], cam, baseScale(earthIdxL) * P[earthIdxL].r) : 999;
-
-      allLabelTargets.forEach(({ mesh, type }, i) => {
-        const el = labelEls[i];
-        if (!mesh || !mesh.visible) { el.style.display = 'none'; return; }
-        // For satellites: hide when Earth < 1/100 screen
-        // Hide satellite labels when Earth < 1/1000 screen (too zoomed out, labels overlap)
-        if (type === 'sat' && earthScreenL < innerHeight / cfg.satLabelHideFrac) { el.style.display = 'none'; return; }
-        // For natural moons: hide when their parent planet < 1/100 screen
-        if (type === 'moon') {
-          const pIdx = mesh.userData?.parentIdx ?? earthIdxL;
-          const parentScreenSz = getScreenSize(meshes[pIdx], cam, baseScale(pIdx) * P[pIdx].r);
-          if (parentScreenSz < innerHeight / cfg.moonLabelHideFrac) { el.style.display = 'none'; return; }
-        }
-        const objScreenSz = getScreenSize(mesh, cam, mesh.scale?.x || 1);
-        const threshold = type === 'sat' ? innerHeight / cfg.satLabelHideFrac : innerHeight / cfg.labelHideFrac;
-        if (objScreenSz < threshold) { el.style.display = 'none'; return; }
-        labelVec.setFromMatrixPosition(mesh.matrixWorld);
-        // Occluded by a planet? Hide label
-        if (isOccludedByPlanet(labelVec)) { el.style.display = 'none'; return; }
-        labelVec.project(cam);
-        if (labelVec.z > 1) { el.style.display = 'none'; return; } // behind camera
-        const x = (labelVec.x * .5 + .5) * innerWidth;
-        const y = (labelVec.y * -.5 + .5) * innerHeight;
-        // For satellites: hide label if screen position falls within Earth's projected disk
-        // (prevents labels from appearing "on" the ocean when satellite orbits in front of Earth)
-        if (type === 'sat' && earthIdxL >= 0) {
-          const ePos = meshes[earthIdxL].position.clone().project(cam);
-          const ex = (ePos.x * .5 + .5) * innerWidth;
-          const ey = (ePos.y * -.5 + .5) * innerHeight;
-          const eDiskR = earthScreenL / 2;
-          const dx = x - ex, dy = y - ey;
-          if (dx * dx + dy * dy < eDiskR * eDiskR * 0.85) { el.style.display = 'none'; return; }
-        }
-        el.style.display = 'block';
-        const screenR = objScreenSz / 2;
-        if (type === 'sat') {
-          // Satellites: label directly on top of the satellite dot, centered
-          el.style.transform = `translate(${x}px, ${y - 30}px) translateX(-50%)`;
-          el.style.textAlign = 'center';
-          el.style.fontSize = '8px';
-        } else {
-          // Planets/moons/probes: label to upper-right
-          const maxOff = type === 'moon' ? 12 : 999;
-          const offset = Math.min(Math.max(screenR + 4, 6), maxOff);
-          el.style.transform = `translate(${x + offset}px, ${y - Math.min(Math.max(screenR * 0.3, 4), maxOff)}px)`;
-          el.style.textAlign = 'left';
-          el.style.fontSize = type === 'planet' ? '14px' : type === 'moon' ? '10px' : '9px';
-        }
-      });
-    }
+    // satLabelBaseIdx no longer needed — satellite labels handled by brackets
 
     // ═══════ NAV ═══════
     navRef.current!.innerHTML = '';
@@ -1374,23 +1044,32 @@ export default function App() {
     // ═══════ SCALE TOGGLE ═══════
     // Real radii in km. Sun stays at current size, everything else scales relative to it.
     // Use realRadiusKm from planet data
-    const REAL_KM: Record<string, number> = {};
-    PLANETS.forEach(p => { REAL_KM[p.id] = p.realRadiusKm; });
-    const SUN_SCENE_R = P[0].r; // current sun radius in scene = 4.8
-    const realScale = true; // always real proportions
-    const origRadii = P.map(p => p.r);
-    // Base scale for each planet — 1.0 normally, tiny ratio in real-scale mode
-    function baseScale(i: number): number {
-      const p = P[i];
+    // Pre-computed per-planet constants (computed ONCE, used every frame)
+    const SUN_SCENE_R = P[0].r;
+    const REAL_KM_SUN = PLANETS.find(pp => pp.isSun)!.realRadiusKm;
+    // baseScales[i] = visual scale factor for planet i (constant, never changes)
+    const baseScales: number[] = P.map((p, i) => {
       if (p.sun) return 1;
-      return realScale ? (REAL_KM[p.id] ?? 6371) / REAL_KM.sun * SUN_SCENE_R / origRadii[i] : 1;
-    }
+      const realKm = PLANETS[i].realRadiusKm;
+      return (realKm / REAL_KM_SUN) * SUN_SCENE_R / p.r;
+    });
+    // Per-planet orbital constants (avoid recomputing trig every frame)
+    const planetSelfRotRates = P.map(p => 2 * Math.PI / (p.rotP * 86400));
+    const planetEcc = P.map(p => p.eccentricity ?? 0);
+    const planetIncl = P.map(p => (p.orbitalIncl ?? 0) * Math.PI / 180);
+    const planetOmega = P.map(p => (p.argPerihelion ?? 0) * Math.PI / 180);
+    const planetOmegaB = P.map(p => (p.longAscNode ?? 0) * Math.PI / 180);
+    // Pre-computed cos/sin of orbital elements (used in position calculation)
+    const cosIncl = planetIncl.map(Math.cos);
+    const sinIncl = planetIncl.map(Math.sin);
+    const cosOmegaB = planetOmegaB.map(Math.cos);
+    const sinOmegaB = planetOmegaB.map(Math.sin);
+    // Scaled visual radius for each planet
+    const planetVisR: number[] = P.map((p, i) => baseScales[i] * p.r);
+
+    function baseScale(i: number): number { return baseScales[i]; }
     function applyAllScales() {
-      P.forEach((p, i) => {
-        if (p.sun) return;
-        const s = baseScale(i);
-        meshes[i].scale.setScalar(s);
-      });
+      P.forEach((_, i) => { if (!P[i].sun) meshes[i].scale.setScalar(baseScales[i]); });
     }
 
     // (scale toggle removed — always real proportions)
@@ -1520,7 +1199,7 @@ export default function App() {
       navRef.current!.querySelectorAll('.nav-planet').forEach(d => d.classList.remove('active'));
       document.querySelectorAll('.nav-moons').forEach(mc => (mc as HTMLElement).style.display = 'none');
     };
-    (window as any).__hideInfoHint = () => { setInfoHint(false); };
+    (window as any).__hideInfoHint = () => { if (infoHintRef.current) infoHintRef.current.style.display = 'none'; };
 
     // ═══════ CONTROLS ═══════
     // Speed presets: each value = how many real seconds per animation second
@@ -1570,6 +1249,7 @@ export default function App() {
       if (sd.starlinkPositions) sd.starlinkPositions.fill(0);
       satTrailReady.fill(false);
       satFrozen.fill(false);
+      satTrailReady.fill(false);
       satTrails.forEach(tr => { if (tr) tr.fill(0); });
       satTrailLines.forEach(tl => { if (tl) { tl.visible = false; tl.geometry.setDrawRange(0, 0); } });
       (window as any).__closeInfo();
@@ -1612,11 +1292,18 @@ export default function App() {
       const earthScreen = getScreenSize(meshes[eIdx4], camera, earthSceneR * earthScale);
       const showBrackets = earthScreen > innerHeight / cfg.satBracketHideFrac;
 
-      // Lazy-create bracket elements
+      // Lazy-create bracket elements with name label
       while (bracketEls.length < sd.meshes.length) {
+        const idx = bracketEls.length;
         const el = document.createElement('div');
         el.className = 'sat-bracket';
-        el.onclick = () => (window as any).__focusSat(bracketEls.indexOf(el));
+        el.onclick = () => (window as any).__focusSat(idx);
+        // Name label inside bracket (same positioning pattern as helper names)
+        const nameEl = document.createElement('div');
+        nameEl.className = 'sat-bracket-name';
+        const sat = sd.sats[idx];
+        nameEl.textContent = sat ? getSatDisplayName(sat.name, sat.noradId) : '';
+        el.appendChild(nameEl);
         bracketContainer.appendChild(el);
         bracketEls.push(el);
       }
@@ -1625,7 +1312,7 @@ export default function App() {
         const el = bracketEls[i];
         if (!el) continue;
         const sm = sd.meshes[i];
-        if (!sm || !sm.visible || !showBrackets || !showHelpers) { el.style.display = 'none'; continue; }
+        if (!sm || !sm.visible || !showBrackets || !showHelpers || spd > 1800) { el.style.display = 'none'; continue; }
 
         bracketVec.setFromMatrixPosition(sm.matrixWorld);
         if (isOccludedByPlanet(bracketVec)) { el.style.display = 'none'; continue; }
@@ -1805,6 +1492,8 @@ export default function App() {
         h.el.style.display = 'block';
         h.el.style.width = cfg.helperSize + 'px'; h.el.style.height = cfg.helperSize + 'px';
         (h.el.style as any).translate = `${x - cfg.helperSize / 2}px ${y - cfg.helperSize / 2}px`;
+        // Show/hide name label based on showLabels toggle
+        h.nameEl.style.opacity = showLabels ? '0.7' : '0';
       }
     }
 
@@ -1823,32 +1512,22 @@ export default function App() {
       if (!paused) t += dt * spd; // t in accelerated real seconds
 
       P.forEach((p, i) => {
-        // Self-rotation: 2π / (rotationPeriod_days * 86400) rad/s, scaled by t (speed-adjusted time)
-        const selfRotRate = 2 * Math.PI / (p.rotP * 86400);
-        if (p.sun) {
-          meshes[i].rotation.y = t * selfRotRate;
-          return;
-        }
+        meshes[i].rotation.y = t * planetSelfRotRates[i];
+        if (p.sun) return;
         const meanAnomaly = initAngles[i] + t * EARTH_RATE * p.s;
-        const ecc = p.eccentricity ?? 0;
-        const incl = (p.orbitalIncl ?? 0) * Math.PI / 180;
-        const omega = (p.argPerihelion ?? 0) * Math.PI / 180;
-        const Omega = (p.longAscNode ?? 0) * Math.PI / 180;
-        // Solve Kepler's equation: E - e*sin(E) = M (Newton's method, 5 iterations)
+        const ecc = planetEcc[i];
+        const omega = planetOmega[i];
+        // Solve Kepler's equation (Newton's method, 5 iterations)
         let E = meanAnomaly;
         for (let k = 0; k < 5; k++) E = E - (E - ecc * Math.sin(E) - meanAnomaly) / (1 - ecc * Math.cos(E));
-        // True anomaly
         const nu = 2 * Math.atan2(Math.sqrt(1 + ecc) * Math.sin(E / 2), Math.sqrt(1 - ecc) * Math.cos(E / 2));
-        // Distance (elliptical)
         const r = p.d * (1 - ecc * ecc) / (1 + ecc * Math.cos(nu));
-        // Position in orbital plane
         const xOrb = r * Math.cos(nu + omega);
         const yOrb = r * Math.sin(nu + omega);
-        // Rotate by inclination and ascending node
-        meshes[i].position.x = xOrb * Math.cos(Omega) - yOrb * Math.cos(incl) * Math.sin(Omega);
-        meshes[i].position.y = yOrb * Math.sin(incl);
-        meshes[i].position.z = xOrb * Math.sin(Omega) + yOrb * Math.cos(incl) * Math.cos(Omega);
-        meshes[i].rotation.y = t * selfRotRate;
+        // Pre-computed cos/sin of orbital elements — no trig per frame
+        meshes[i].position.x = xOrb * cosOmegaB[i] - yOrb * cosIncl[i] * sinOmegaB[i];
+        meshes[i].position.y = yOrb * sinIncl[i];
+        meshes[i].position.z = xOrb * sinOmegaB[i] + yOrb * cosIncl[i] * cosOmegaB[i];
 
         // Hide planet + its orbit if too small on screen
         if (orbitLines[i - 1]) {
@@ -1859,6 +1538,18 @@ export default function App() {
           if (olm?.color && olm._lastOpacity !== cfg.planetOrbitOpacity) { olm.color.setHex(darkenHex(p.col, cfg.planetOrbitOpacity)); olm._lastOpacity = cfg.planetOrbitOpacity; }
         }
       });
+
+      // ═══ PER-PLANET LOD: Earth always FULL, other planets SHELL when small ═══
+      for (let pi = 0; pi < meshes.length; pi++) {
+        if (pi === EARTH_IDX) continue; // Earth: always keep atmosphere + clouds
+        const pm = meshes[pi];
+        if (!pm.visible) continue;
+        const pScreenPx = getScreenSize(pm, cam, planetVisR[pi]);
+        const isShell = pScreenPx < innerHeight / 20;
+        pm.children.forEach(child => {
+          if ((child as any).userData?.isGlow) (child as THREE.Mesh).visible = !isShell;
+        });
+      }
 
       // Cloud rotation: slight drift relative to Earth surface (wind)
       if (earthCloudMesh) {
@@ -1935,12 +1626,12 @@ export default function App() {
         nm.visible = nmScreenSz >= innerHeight / cfg.moonLabelHideFrac;
       });
 
-      const tAngle = t * EARTH_RATE; // normalized orbital angle progress
-      // Hide all probes when Earth < 1/5000 screen
-      const earthScreenForProbes = getScreenSize(meshes[EARTH_IDX], cam, baseScale(EARTH_IDX) * P[EARTH_IDX].r);
+      const tAngle = t * EARTH_RATE;
+      // Probes: only visible when probe layer is on AND speed ≤ 30min/s AND not zoomed too far
+      const earthScreenForProbes = getScreenSize(meshes[EARTH_IDX], cam, planetVisR[EARTH_IDX]);
       PR.forEach((pr, i) => {
         const m = probeMeshes[i];
-        if (!layers.probe || earthScreenForProbes < innerHeight / cfg.helperHideFrac) { m.visible = false; return; }
+        if (!layers.probe || spd > 1800 || earthScreenForProbes < innerHeight / cfg.helperHideFrac) { m.visible = false; return; }
         m.visible = true;
         if (pr.orb !== undefined) {
           const pp = meshes[pr.orb].position;
@@ -1954,11 +1645,6 @@ export default function App() {
       });
 
       // ═══ Update satellite positions + trails ═══
-      // Speed-based throttle: SGP4 is expensive and meaningless at very high speeds
-      //   spd < 300 (≤5min/s):  every frame — real-time accuracy
-      //   spd < 3600 (≤1h/s):   every 3rd frame
-      //   spd < 86400 (≤1d/s):  every 10th frame
-      //   spd >= 86400:          skip satellites entirely (SGP4 invalid at this timescale)
       const sd = satDataRef.current;
       const satSkip = spd >= 86400;
       const satInterval = spd < 300 ? 1 : spd < 3600 ? 3 : 10;
@@ -1974,6 +1660,8 @@ export default function App() {
         // Hide all satellites + trails when Earth is too small on screen or speed too high
         const earthScreenForSats = getScreenSize(meshes[eIdx], cam, earthSceneR * sc);
         const hideAllSats = satSkip || earthScreenForSats < innerHeight / cfg.satBracketHideFrac;
+        // At speed > 2h/s, hide satellite labels and brackets (too fast to read)
+        const hideSatUI = spd > 7200;
 
         for (let i = 0; i < sd.sats.length; i++) {
           const sm = sd.meshes[i];
@@ -1982,8 +1670,8 @@ export default function App() {
           const groupOn = sd.groups[sat?.groupId] ?? false;
           if (!groupOn || hideAllSats) {
             sm.visible = false;
-            if (satTrailLines[i]) { satTrailLines[i].visible = false; satTrailLines[i].geometry.setDrawRange(0, 0); }
-            if (satTrails[i]) { satTrails[i].fill(0); satTrailReady[i] = false; }
+            if (satTrailLines[i]) { satTrailLines[i]!.visible = false; }
+            if (satTrails[i]) { satTrails[i]!.fill(0); satTrailReady[i] = false; }
             continue;
           }
 
@@ -1999,7 +1687,7 @@ export default function App() {
 
           // Compute position at current simulated time
           const eci = getSatPositionECI(sat, now);
-          if (!eci || !isFinite(eci.x) || !isFinite(eci.y) || !isFinite(eci.z)) { sm.visible = false; if (satTrailLines[i]) satTrailLines[i].visible = false; continue; }
+          if (!eci || !isFinite(eci.x) || !isFinite(eci.y) || !isFinite(eci.z)) { sm.visible = false; continue; }
 
           // Check altitude deviation — freeze if >1.5x expected
           const eciDistKm = Math.sqrt(eci.x * eci.x + eci.y * eci.y + eci.z * eci.z);
@@ -2028,29 +1716,9 @@ export default function App() {
             if (dot > 0.98 && camSatDist > camEarthDist) { sm.visible = false; continue; }
           }
           sm.visible = true;
-
-          // Per-satellite jitter values (used for both position and trail)
-          const isStation = sat.groupId === 'stations';
-          const seed = i * 7919;
-          const jitAmount = earthSceneR * sc * (isStation ? 0.03 : 0.01);
-          const radialJit = (Math.abs(Math.sin(seed)) * 0.8 + 0.2) * jitAmount;
-          const tanJit = jitAmount * 0.3;
-
-          // Jitter — spread satellites along radial direction (outward from Earth only)
-          // Radial direction from Earth center
-          const dxR = pos.x - ep.x, dyR = pos.y - ep.y, dzR = pos.z - ep.z;
-          const distR = Math.sqrt(dxR * dxR + dyR * dyR + dzR * dzR);
-          if (distR > 0.001) {
-            const nx = dxR / distR, ny = dyR / distR, nz = dzR / distR;
-            pos.x += nx * radialJit;
-            pos.y += ny * radialJit;
-            pos.z += nz * radialJit;
-            pos.x += Math.cos(seed * 2.7) * tanJit * ny;
-            pos.y += Math.sin(seed * 3.1) * tanJit * nz;
-            pos.z += Math.cos(seed * 1.3) * tanJit * nx;
-          }
           sm.position.set(pos.x, pos.y, pos.z);
 
+          const isStation = sat.groupId === 'stations';
           // Stations 3x bigger than regular sats
           // Minimum size scales with Earth: 0.1% of Earth's scene radius (≈6km equiv, ~3px when Earth fills screen)
           const minSatSize = earthSceneR * sc * 0.001;
@@ -2060,44 +1728,43 @@ export default function App() {
           // Visibility is governed by hideAllSats (Earth screen size < 1/100)
           // No per-satellite screen-size check — satellites are always tiny but shown when Earth is visible
 
-          // Trail: SGP4 past positions (staggered recomputation)
-          if (satTrails[i] && showTrails && spd < 3600) {
+          // Trail: SGP4 past positions, 50% orbit (spd ≤ 30min/s)
+          // Recompute frequency scales with speed: fast = more often (keeps trail smooth)
+          if (satTrails[i] && showTrails && spd <= 1800) {
+            const trailStagger = spd < 60 ? 60 : spd < 300 ? 20 : 8;
             const lastIdx = TRAIL_LEN - 1;
-            if (!satTrailReady[i] || frameCount % 60 === (i % 60)) {
-              const sr = sat.satrec as any;
-              const periodSec = sr.no ? (2 * Math.PI / sr.no) * 60 : 5400;
-              // Trail shows 30% of one orbit
-              const trailDuration = periodSec * 0.3;
+            if (!satTrailReady[i] || frameCount % trailStagger === (i % trailStagger)) {
+              const sr2 = sat.satrec as any;
+              const periodSec = sr2.no ? (2 * Math.PI / sr2.no) * 60 : 5400;
+              const trailDuration = periodSec * 0.5;
               let allValid = true;
+              const nowMs = now.getTime();
+              const trailDate = new Date(nowMs);
               for (let s = 0; s <= lastIdx; s++) {
-                const pastTime = new Date(now.getTime() - (lastIdx - s) / lastIdx * trailDuration * 1000);
-                const pastEci = getSatPositionECI(sat, pastTime);
+                trailDate.setTime(nowMs - (lastIdx - s) / lastIdx * trailDuration * 1000);
+                const pastEci = getSatPositionECI(sat, trailDate);
                 if (pastEci) {
                   const pp = eciToScene(pastEci, ep, earthSceneR, sc);
-                  // Apply same radial+tangential jitter as satellite position
-                  let rx = pp.x - ep.x, ry = pp.y - ep.y, rz = pp.z - ep.z;
-                  const rd = Math.sqrt(rx * rx + ry * ry + rz * rz);
-                  if (rd > 0.001) {
-                    const rnx = rx / rd, rny = ry / rd, rnz = rz / rd;
-                    rx += rnx * radialJit + Math.cos(seed * 2.7) * tanJit * rny;
-                    ry += rny * radialJit + Math.sin(seed * 3.1) * tanJit * rnz;
-                    rz += rnz * radialJit + Math.cos(seed * 1.3) * tanJit * rnx;
-                  }
-                  satTrails[i][s * 3] = rx;
-                  satTrails[i][s * 3 + 1] = ry;
-                  satTrails[i][s * 3 + 2] = rz;
+                  satTrails[i]![s * 3] = pp.x - ep.x;
+                  satTrails[i]![s * 3 + 1] = pp.y - ep.y;
+                  satTrails[i]![s * 3 + 2] = pp.z - ep.z;
                 } else { allValid = false; }
               }
-              // Last point = exact current position
-              satTrails[i][lastIdx * 3] = pos.x - ep.x;
-              satTrails[i][lastIdx * 3 + 1] = pos.y - ep.y;
-              satTrails[i][lastIdx * 3 + 2] = pos.z - ep.z;
-              if (allValid) satTrailReady[i] = true;
+              satTrails[i]![lastIdx * 3] = pos.x - ep.x;
+              satTrails[i]![lastIdx * 3 + 1] = pos.y - ep.y;
+              satTrails[i]![lastIdx * 3 + 2] = pos.z - ep.z;
+              if (allValid) {
+                satTrailReady[i] = true;
+              } else {
+                // Incomplete trail — zero out to prevent lines from Earth center
+                satTrails[i]!.fill(0);
+                satTrailReady[i] = false;
+              }
             } else {
-              // Between recomputations, update last point to track satellite
-              satTrails[i][lastIdx * 3] = pos.x - ep.x;
-              satTrails[i][lastIdx * 3 + 1] = pos.y - ep.y;
-              satTrails[i][lastIdx * 3 + 2] = pos.z - ep.z;
+              // Between recomputes: always update head point to track satellite
+              satTrails[i]![lastIdx * 3] = pos.x - ep.x;
+              satTrails[i]![lastIdx * 3 + 1] = pos.y - ep.y;
+              satTrails[i]![lastIdx * 3 + 2] = pos.z - ep.z;
             }
             const line = satTrailLines[i];
             if (line) {
@@ -2110,7 +1777,7 @@ export default function App() {
               if (mat.uniforms?.opacity) mat.uniforms.opacity.value = cfg.satTrailOpacity;
             }
           } else if (satTrailLines[i]) {
-            satTrailLines[i].visible = false;
+            satTrailLines[i]!.visible = false;
           }
         }
 
@@ -2149,12 +1816,17 @@ export default function App() {
       }
 
       // Satellite orbit lines follow Earth position
+      // At speed > 30min/s: show satellite orbits instead of trails
+      const showSatOrbitsAuto = spd > 1800 && !hideAllSats;
+      if (showSatOrbitsAuto && sd.orbitLines.length === 0 && sd.sats.length > 0) {
+        computeSatOrbits(); // lazy compute on first need
+      }
       if (sd.orbitLines.length > 0) {
-        const eIdx3 = EARTH_IDX;
-        const ep2 = meshes[eIdx3].position;
-        const sc2 = baseScale(eIdx3);
+        const ep2 = meshes[EARTH_IDX].position;
         sd.orbitLines.forEach(ol => {
-          if (ol.visible) { ol.position.copy(ep2); ol.scale.setScalar(sc2); }
+          ol.visible = showOrbits || showSatOrbitsAuto;
+          // Position at Earth center. NO scale — positions already scaled in computeSatOrbits
+          if (ol.visible) ol.position.copy(ep2);
           const olm = (ol as any).material;
           if (olm) olm.opacity = cfg.satOrbitOpacity;
         });
@@ -2163,60 +1835,72 @@ export default function App() {
       if (focIdx >= 0) tT.copy(meshes[focIdx].position);
       // Follow focused moon — track its orbiting position
       if (focMoonMesh && focIdx < 0 && focSatIdx < 0) tT.copy(focMoonMesh.position);
-      // Follow focused satellite — track position, angle, and enlarge for visibility
+      // Follow focused satellite — swap to detailed model on focus, track position
       if (focSatIdx >= 0) {
+        (window as any).__lastFocSat = focSatIdx;
         const fsm = satDataRef.current.meshes[focSatIdx];
         if (fsm) {
-          fsm.visible = true;
           tT.copy(fsm.position);
-          // On first focus: compute a fixed enlarged scale for visibility at initial distance
-          if (!fsm.userData.baseScale) {
+          // First frame of focus: hide simple box, add detail Group at same position
+          if (!fsm.userData._focusActive) {
+            fsm.userData._focusActive = true;
             fsm.userData.baseScale = fsm.scale.x;
-            fsm.userData.focInitDist = tD; // use target distance (already set by __focusSat)
-            // Compute model radius at unit scale
-            const savedScale = fsm.scale.x;
-            fsm.scale.setScalar(1);
-            const bbox = new THREE.Box3().setFromObject(fsm);
+            fsm.userData.focInitDist = tD;
+            fsm.visible = false; // hide the simple box
+            // Create detailed model Group (body + panels + antenna, async GLB swap)
+            const colNum = typeof fsm.userData.color === 'string' ? parseInt(fsm.userData.color.replace('#', ''), 16) : fsm.userData.color;
+            const detailGroup = createSatelliteModel(colNum, fsm.userData.groupId);
+            detailGroup.position.copy(fsm.position);
+            detailGroup.scale.copy(fsm.scale);
+            scene.add(detailGroup);
+            fsm.userData._detailGroup = detailGroup;
+            // Compute scale from detail model bounding sphere
+            const bbox = new THREE.Box3().setFromObject(detailGroup);
             const bsph = new THREE.Sphere();
             bbox.getBoundingSphere(bsph);
             fsm.userData.modelRadius = Math.max(bsph.radius, 0.015);
-            fsm.scale.setScalar(savedScale);
-            // Scale to be ~1/20 screen width at initial distance
-            const targetWorldR = 0.05 * tD * Math.tan(25 * Math.PI / 180);
+            const targetWorldR = 0.01 * tD * Math.tan(25 * Math.PI / 180); // ~1/100 screen width
             fsm.userData.focScale = targetWorldR / fsm.userData.modelRadius;
           }
-          // Blend: at initial distance or closer → use focScale (natural zoom makes it bigger/smaller)
-          // Beyond 3x initial distance → lerp back to baseScale
-          const initDist = fsm.userData.focInitDist || cD;
-          const blendStart = initDist * 2;
-          const blendEnd = initDist * 5;
-          const t2 = Math.min(Math.max((cD - blendStart) / (blendEnd - blendStart), 0), 1);
-          const currentScale = fsm.userData.focScale * (1 - t2) + fsm.userData.baseScale * t2;
-          fsm.scale.setScalar(Math.max(currentScale, fsm.userData.baseScale));
-        }
-      } else {
-        // Restore any previously focused satellite to its base scale
-        satDataRef.current.meshes.forEach(sm => {
-          if (sm && sm.userData.baseScale) {
-            sm.scale.setScalar(sm.userData.baseScale);
-            delete sm.userData.baseScale;
-            delete sm.userData.focScale;
-            delete sm.userData.focInitDist;
-            delete sm.userData.modelRadius;
+          // Update detail group position + scale each frame
+          const dg = fsm.userData._detailGroup as THREE.Group | undefined;
+          if (dg) {
+            dg.position.copy(fsm.position);
+            const initDist = fsm.userData.focInitDist || cD;
+            const blendStart = initDist * 2;
+            const blendEnd = initDist * 5;
+            const t2 = Math.min(Math.max((cD - blendStart) / (blendEnd - blendStart), 0), 1);
+            const currentScale = fsm.userData.focScale * (1 - t2) + fsm.userData.baseScale * t2;
+            dg.scale.setScalar(Math.max(currentScale, fsm.userData.baseScale));
           }
-        });
+        }
+      } else if ((window as any).__lastFocSat !== undefined) {
+        // Restore ONLY the previously focused satellite (not iterate all)
+        const prevIdx = (window as any).__lastFocSat;
+        const sm = satDataRef.current.meshes[prevIdx];
+        if (sm && sm.userData._focusActive) {
+          const dg = sm.userData._detailGroup as THREE.Group | undefined;
+          if (dg) scene.remove(dg);
+          sm.visible = true;
+          sm.scale.setScalar(sm.userData.baseScale);
+          delete sm.userData._focusActive;
+          delete sm.userData._detailGroup;
+          delete sm.userData.baseScale;
+          delete sm.userData.focScale;
+          delete sm.userData.focInitDist;
+          delete sm.userData.modelRadius;
+        }
+        delete (window as any).__lastFocSat;
       }
 
       const lf = 1 - Math.pow(.008, dt);     // smooth (for zoom/position transitions)
       const lfRot = 1 - Math.pow(.0001, dt); // snappy (for rotation — near-instant response)
       cA.t += (tA.t - cA.t) * lfRot; cA.p += (tA.p - cA.p) * lfRot;
-      if (focSatIdx >= 0) {
-        // Position: snap to satellite (must track real-time SGP4 position)
+      cD += (tD - cD) * lf;
+      if (focIdx >= 0 || focSatIdx >= 0 || focMoonMesh) {
+        // Focused on something: snap position (no lerp lag at any speed)
         cT.copy(tT);
-        // Distance: smooth lerp for zoom-in animation
-        cD += (tD - cD) * lf;
       } else {
-        cD += (tD - cD) * lf;
         cT.lerp(tT, lf);
       }
       // Prevent camera from entering any planet's interior (zero-allocation)
@@ -2239,23 +1923,19 @@ export default function App() {
       cam.position.set(cT.x + cD * Math.sin(cA.p) * Math.cos(cA.t), cT.y + cD * Math.cos(cA.p), cT.z + cD * Math.sin(cA.p) * Math.sin(cA.t));
       cam.lookAt(cT);
 
-      // Update atmosphere uniforms — skip for sub-pixel planets (GPU savings)
+      // Update atmosphere uniforms — only for VISIBLE glow meshes (LOD already hid far ones)
       const glowSunPos = meshes[0].position;
       glowMeshes.forEach(gm => {
+        if (!gm.visible) return; // LOD already set visibility, skip hidden ones entirely
         const parent = gm.parent;
         if (!parent || !parent.visible) { gm.visible = false; return; }
-        // Skip glow updates for planets smaller than 2px on screen
-        const parentIdx = parent.userData?.idx as number | undefined;
-        if (parentIdx !== undefined && parentIdx >= 0) {
-          const pScreenSz = getScreenSize(parent, cam, baseScale(parentIdx) * P[parentIdx].r);
-          if (pScreenSz < 2) { gm.visible = false; return; }
-        }
         const mat = gm.userData.glowMat as THREE.ShaderMaterial;
         mat.uniforms.sunPos.value.copy(glowSunPos);
         mat.uniforms.camPos.value.copy(cam.position);
+        // Hide if camera is inside the glow sphere
         const glowWorldR = gm.scale.x * (parent.scale?.x || 1);
         const distToParent = cam.position.distanceTo(parent.position);
-        gm.visible = distToParent > glowWorldR;
+        if (distToParent <= glowWorldR) gm.visible = false;
       });
 
       // Dynamic near/far plane
@@ -2317,7 +1997,6 @@ export default function App() {
       }
 
       ren.render(scene, cam);
-      updateLabels();
       updateHelpers();
     }
 
@@ -2328,8 +2007,7 @@ export default function App() {
       if (moonOrbitLine && (moonOrbitLine as any).material?.resolution) (moonOrbitLine as any).material.resolution.set(innerWidth, innerHeight);
     };
     window.addEventListener('resize', onResize);
-    setTimeout(() => introRef.current?.classList.add('gone'), 2200);
-    // Preload Starlink count from cache and update status with full count
+    // Preload Starlink count from cache
     fetch(BASE + 'data/satellites-cache.json').then(r => r.ok ? r.json() : null).then(c => {
       if (c?.groups?.starlink) {
         const slTotal = c.groups.starlink.length;
@@ -2341,10 +2019,25 @@ export default function App() {
       }
     }).catch(() => {});
     if (satCountRef.current) satCountRef.current.textContent = '— 颗卫星追踪中';
-    // Default: focus on Earth after intro
+
+    // Wait for BOTH min intro time AND satellite data before dismissing splash
+    const introMinTime = 2200;
+    const introStart = performance.now();
     const earthStartIdx = EARTH_IDX;
-    setTimeout(() => { if (earthStartIdx >= 0) focusObj(earthStartIdx); }, 2400);
-    setTimeout(() => updSpd(), 100); // set initial dial position
+    function tryDismissIntro() {
+      const elapsed = performance.now() - introStart;
+      if (elapsed >= introMinTime && satDataLoaded) {
+        introRef.current?.classList.add('gone');
+        setTimeout(() => { if (earthStartIdx >= 0) focusObj(earthStartIdx); }, 200);
+      } else {
+        // Update progress text
+        const prog = document.getElementById('__introProgress');
+        if (prog && !satDataLoaded) prog.textContent = '加载卫星数据';
+        requestAnimationFrame(tryDismissIntro);
+      }
+    }
+    requestAnimationFrame(tryDismissIntro);
+    setTimeout(() => updSpd(), 100);
     anim();
 
     return () => {
@@ -2394,6 +2087,7 @@ export default function App() {
         <div className="intro-line"><span className="intro-word intro-title w1">OPENGLOBES</span></div>
         <div className="intro-line"><span className="intro-word w2">此 刻 太 空</span></div>
         <div className="intro-pulse" style={{ marginTop: 24 }}></div>
+        <div id="__introProgress" style={{ marginTop: 16, fontSize: 11, color: 'var(--text-dim)', fontFamily: 'var(--font-cn)', opacity: 0.6, letterSpacing: 1 }}>加载中...</div>
       </div>
 
       <div ref={canvasRef} />
@@ -2412,14 +2106,12 @@ export default function App() {
 
       <div className="nav" ref={navRef} />
 
-      {/* Info hint icon — appears when an object is selected, click to open details */}
-      {infoHint && (
-        <button className="info-hint" onClick={() => (window as any).__openInfo()}>
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>
-          </svg>
-        </button>
-      )}
+      {/* Info hint icon — DOM-driven visibility (avoids React re-render on every planet click) */}
+      <button className="info-hint" ref={infoHintRef} style={{ display: 'none' }} onClick={() => (window as any).__openInfo()}>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>
+        </svg>
+      </button>
 
       <div className="info" ref={infoRef}>
         <div className="info-drag" onPointerDown={(e) => {
@@ -2517,7 +2209,7 @@ export default function App() {
           <div className="sat-layout">
             <div className="sat-sidebar">
               <div className="sat-col-title">分类</div>
-              {['beidou', 'science', 'stations', 'starlink', 'gps', 'probes', 'visual', 'weather', 'resource', 'geodetic'].map(tid => {
+              {['beidou', 'weather', 'stations', 'starlink', 'gps', 'probes', 'science', 'resource', 'geodetic', 'visual'].map(tid => {
                 if (tid === 'probes') return (
                   <button key="probes" className={`sat-tab ${satTab === 'probes' ? 'active' : ''}`} onClick={() => setSatTab('probes')}>
                     <span className="sat-tab-row"><span className={`sat-tab-dot ${probesVisible ? '' : 'off'}`} style={{ background: 'linear-gradient(135deg, #81C784, #CE93D8, #FFB74D)' }} />探测器</span>
@@ -2629,7 +2321,7 @@ export default function App() {
       )}
 
       <div className="tip" ref={tipRef} />
-      <div ref={labelsRef} />
+      {/* Labels integrated into helper system — no separate labels div */}
       <div ref={satBracketsRef} />
       <div ref={helpersRef} />
 
