@@ -183,12 +183,14 @@ export default function App() {
       helperSize: 18,          // px
       bracketSize: 12,         // px
       labelHideFrac: 5000,     // labels hidden when object < innerHeight/this
-      satLabelHideFrac: 100,   // smaller = sat stuff disappears sooner
+      satLabelHideFrac: 20000,   // smaller = sat stuff disappears sooner
       moonLabelHideFrac: 2000, // larger = moons stay visible longer
       helperHideFrac: 5000,
       satBracketHideFrac: 100,
-      planetOrbitHideDist: 800,
+      planetOrbitHideDist: 5000,
       moonOrbitHideDist: 300,
+      invertH: false,  // invert horizontal drag
+      invertV: false,  // invert vertical drag
     };
     const scene = new THREE.Scene();
     const cam = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, .1, 2000);
@@ -1025,8 +1027,7 @@ export default function App() {
           const dir = earthToSat.normalize();
           tA.t = Math.atan2(dir.x, dir.z);
           tA.p = Math.acos(Math.max(-0.99, Math.min(0.99, dir.y)));
-          // Snap camera angle immediately
-          cA.t = tA.t; cA.p = tA.p;
+          // Angle lerps smoothly via cA += (tA - cA) * lf in anim loop
         }
       }
       const dn = getSatDisplayName(sat.name, sat.noradId);
@@ -1183,7 +1184,9 @@ export default function App() {
         const dx = e.clientX - pM.x, dy = e.clientY - pM.y;
         if (Math.abs(dx) > 2 || Math.abs(dy) > 2) dragMoved = true;
         // Mobile touch: reverse horizontal to feel like globe dragging
-        tA.t += dx * .004; tA.p = Math.max(.1, Math.min(Math.PI - .1, tA.p - dy * .004));
+        const hDir = cfg.invertH ? -1 : 1;
+        const vDir = cfg.invertV ? 1 : -1;
+        tA.t += hDir * dx * .004; tA.p = Math.max(.1, Math.min(Math.PI - .1, tA.p + vDir * dy * .004));
         pM = { x: e.clientX, y: e.clientY };
       }
       hoverFn(e);
@@ -2082,9 +2085,10 @@ export default function App() {
       const lf = 1 - Math.pow(.008, dt);
       cA.t += (tA.t - cA.t) * lf; cA.p += (tA.p - cA.p) * lf;
       if (focSatIdx >= 0) {
-        // Locked on satellite: snap everything instantly — zero delay
-        cD = tD;
+        // Position: snap to satellite (must track real-time SGP4 position)
         cT.copy(tT);
+        // Distance: smooth lerp for zoom-in animation
+        cD += (tD - cD) * lf;
       } else {
         cD += (tD - cD) * lf;
         cT.lerp(tT, lf);
@@ -2525,7 +2529,7 @@ export default function App() {
                 <div style={{ fontSize: 10, color: 'var(--glow)', marginBottom: 4 }}>行星轨道</div>
                 <CfgSlider label="线宽" min={0.5} max={4} step={0.1} cfgKey="planetOrbitWidth" />
                 <CfgSlider label="亮度" min={0} max={1} step={0.05} cfgKey="planetOrbitOpacity" />
-                <CfgSlider label="消失距离" min={100} max={2000} step={50} cfgKey="planetOrbitHideDist" />
+                <CfgSlider label="消失距离" min={500} max={20000} step={100} cfgKey="planetOrbitHideDist" />
                 <div className="sat-content-divider" />
                 <div style={{ fontSize: 10, color: 'var(--glow)', marginBottom: 4 }}>天然卫星轨道</div>
                 <CfgSlider label="线宽" min={0.5} max={3} step={0.1} cfgKey="moonOrbitWidth" />
@@ -2551,8 +2555,8 @@ export default function App() {
                 <div className="sat-content-divider" />
                 <div style={{ fontSize: 10, color: 'var(--glow)', marginBottom: 4 }}>标记与可见性</div>
                 <CfgSlider label="选择框大小" min={6} max={24} step={1} cfgKey="bracketSize" />
-                <CfgSlider label="名称可见性" min={50} max={2000} step={50} cfgKey="satLabelHideFrac" />
-                <CfgSlider label="选择框可见性" min={50} max={2000} step={50} cfgKey="satBracketHideFrac" />
+                <CfgSlider label="名称可见性" min={5000} max={20000} step={100} cfgKey="satLabelHideFrac" />
+                <CfgSlider label="选择框可见性" min={100} max={1000} step={50} cfgKey="satBracketHideFrac" />
               </>)}
 
               {settingsTab === 'general' && (<>
@@ -2565,6 +2569,10 @@ export default function App() {
                 <label className="mobile-toggle"><input type="checkbox" defaultChecked onChange={() => (window as any).__toggleOrbits()} /><span>轨道线</span></label>
                 <label className="mobile-toggle"><input type="checkbox" defaultChecked id="__helperBtn" onChange={() => (window as any).__toggleHelpers()} /><span>选择辅助框</span></label>
                 <label className="mobile-toggle"><input type="checkbox" checked={showStatus} onChange={() => setShowStatus(v => !v)} /><span>状态信息栏</span></label>
+                <div className="sat-content-divider" />
+                <div style={{ fontSize: 10, color: 'var(--glow)', marginBottom: 4 }}>单指旋转控制</div>
+                <label className="mobile-toggle"><input type="checkbox" onChange={e => { (window as any).__cfg.invertH = e.target.checked; }} /><span>反转左右旋转</span></label>
+                <label className="mobile-toggle"><input type="checkbox" onChange={e => { (window as any).__cfg.invertV = e.target.checked; }} /><span>反转上下旋转</span></label>
               </>)}
               {settingsTab === 'audio' && (<>
                 <div className="sat-content-header">
