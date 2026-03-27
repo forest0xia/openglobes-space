@@ -88,33 +88,45 @@ const PR = PROBES.map((p, idx) => {
   return { n: p.name, cn: p.nameCn, col: h2n(p.color), dist: fb.distance, ang: fb.angle, y: (idx % 3 - 1) * 6, desc: p.desc, launched: p.launched, orb: undefined as number | undefined, od: 0, emoji: p.emoji };
 });
 
-// Settings slider — reads/writes window.__cfg directly, no React state, no re-renders
-function CfgSlider({ label, min, max, step, cfgKey }: { label: string; min: number; max: number; step: number; cfgKey: string }) {
+// Settings stepper — pure DOM, no React state, no continuous onChange
+function CfgStepper({ label, min, max, step, cfgKey }: { label: string; min: number; max: number; step: number; cfgKey: string }) {
   const valRef = useRef<HTMLSpanElement>(null);
   const cfg = (window as any).__cfg;
-  const current = cfg?.[cfgKey] ?? 0;
+  const update = (dir: number) => {
+    if (!cfg) return;
+    const v = Math.round(Math.max(min, Math.min(max, (cfg[cfgKey] ?? 0) + dir * step)) * 1000) / 1000;
+    cfg[cfgKey] = v;
+    if (valRef.current) valRef.current.textContent = String(v);
+  };
   return (
-    <div className="settings-row">
-      <div className="settings-label"><span>{label}</span><span className="settings-val" ref={valRef}>{current}</span></div>
-      <input type="range" min={min} max={max} step={step} defaultValue={current} onChange={e => {
-        const v = parseFloat(e.target.value);
-        if (cfg) cfg[cfgKey] = v;
-        if (valRef.current) valRef.current.textContent = String(v);
-      }} />
+    <div className="stepper-row">
+      <span className="stepper-label">{label}</span>
+      <div className="stepper-ctrl">
+        <button className="stepper-btn" onClick={() => update(-1)}>−</button>
+        <span className="stepper-val" ref={valRef}>{cfg?.[cfgKey] ?? 0}</span>
+        <button className="stepper-btn" onClick={() => update(1)}>+</button>
+      </div>
     </div>
   );
 }
 
-function VolSlider({ label, min, max, step, defaultValue, onChange }: { label: string; min: number; max: number; step: number; defaultValue: number; onChange: (v: number) => void }) {
+function VolStepper({ label, min, max, step, defaultValue, onChange }: { label: string; min: number; max: number; step: number; defaultValue: number; onChange: (v: number) => void }) {
   const valRef = useRef<HTMLSpanElement>(null);
+  const curRef = useRef(defaultValue);
+  const update = (dir: number) => {
+    const v = Math.round(Math.max(min, Math.min(max, curRef.current + dir * step)) * 1000) / 1000;
+    curRef.current = v;
+    onChange(v);
+    if (valRef.current) valRef.current.textContent = String(v);
+  };
   return (
-    <div className="settings-row">
-      <div className="settings-label"><span>{label}</span><span className="settings-val" ref={valRef}>{defaultValue}</span></div>
-      <input type="range" min={min} max={max} step={step} defaultValue={defaultValue} onChange={e => {
-        const v = parseFloat(e.target.value);
-        onChange(v);
-        if (valRef.current) valRef.current.textContent = String(v);
-      }} />
+    <div className="stepper-row">
+      <span className="stepper-label">{label}</span>
+      <div className="stepper-ctrl">
+        <button className="stepper-btn" onClick={() => update(-1)}>−</button>
+        <span className="stepper-val" ref={valRef}>{defaultValue}</span>
+        <button className="stepper-btn" onClick={() => update(1)}>+</button>
+      </div>
     </div>
   );
 }
@@ -1177,16 +1189,19 @@ export default function App() {
     // Start with equatorial view (p = PI/2 = horizontal), camera will fly to Earth on load
     let cA = { t: 0.3, p: Math.PI / 3 }, cD = 105, cT = new THREE.Vector3();
     let tA = { t: 0.3, p: Math.PI / 3 }, tD = 105, tT = new THREE.Vector3();
+    // Drag momentum (inertia)
+    let dragVelT = 0, dragVelP = 0;
 
-    ren.domElement.addEventListener('pointerdown', e => { drag = true; dragMoved = false; pM = { x: e.clientX, y: e.clientY }; document.body.style.cursor = 'grabbing'; });
+    ren.domElement.addEventListener('pointerdown', e => { drag = true; dragMoved = false; dragVelT = 0; dragVelP = 0; pM = { x: e.clientX, y: e.clientY }; document.body.style.cursor = 'grabbing'; });
     ren.domElement.addEventListener('pointermove', e => {
       if (drag) {
         const dx = e.clientX - pM.x, dy = e.clientY - pM.y;
         if (Math.abs(dx) > 2 || Math.abs(dy) > 2) dragMoved = true;
-        // Mobile touch: reverse horizontal to feel like globe dragging
         const hDir = cfg.invertH ? -1 : 1;
         const vDir = cfg.invertV ? 1 : -1;
-        tA.t += hDir * dx * .004; tA.p = Math.max(.1, Math.min(Math.PI - .1, tA.p + vDir * dy * .004));
+        dragVelT = hDir * dx * .004;
+        dragVelP = vDir * dy * .004;
+        tA.t += dragVelT; tA.p = Math.max(.1, Math.min(Math.PI - .1, tA.p + dragVelP));
         pM = { x: e.clientX, y: e.clientY };
       }
       hoverFn(e);
@@ -1721,7 +1736,7 @@ export default function App() {
     let frameCount = 0;
     function anim() {
       animId = requestAnimationFrame(anim);
-      const now2 = performance.now(); const dt = (now2 - lastTime) / 1000; lastTime = now2;
+      const now2 = performance.now(); const dt = Math.min((now2 - lastTime) / 1000, 0.1); lastTime = now2; // clamp to avoid spikes
       frameCount++;
       if (!paused) t += dt * spd; // t in accelerated real seconds
 
@@ -2082,6 +2097,13 @@ export default function App() {
         });
       }
 
+      // Apply drag inertia when not dragging
+      if (!drag && (Math.abs(dragVelT) > 0.0001 || Math.abs(dragVelP) > 0.0001)) {
+        tA.t += dragVelT;
+        tA.p = Math.max(.1, Math.min(Math.PI - .1, tA.p + dragVelP));
+        dragVelT *= 0.92; // friction
+        dragVelP *= 0.92;
+      }
       const lf = 1 - Math.pow(.008, dt);
       cA.t += (tA.t - cA.t) * lf; cA.p += (tA.p - cA.p) * lf;
       if (focSatIdx >= 0) {
@@ -2527,20 +2549,20 @@ export default function App() {
                 </div>
                 <div className="sat-content-divider" />
                 <div style={{ fontSize: 10, color: 'var(--glow)', marginBottom: 4 }}>行星轨道</div>
-                <CfgSlider label="线宽" min={0.5} max={4} step={0.1} cfgKey="planetOrbitWidth" />
-                <CfgSlider label="亮度" min={0} max={1} step={0.05} cfgKey="planetOrbitOpacity" />
-                <CfgSlider label="消失距离" min={500} max={20000} step={100} cfgKey="planetOrbitHideDist" />
+                <CfgStepper label="线宽" min={0.5} max={4} step={0.1} cfgKey="planetOrbitWidth" />
+                <CfgStepper label="亮度" min={0} max={1} step={0.05} cfgKey="planetOrbitOpacity" />
+                <CfgStepper label="消失距离" min={500} max={20000} step={100} cfgKey="planetOrbitHideDist" />
                 <div className="sat-content-divider" />
                 <div style={{ fontSize: 10, color: 'var(--glow)', marginBottom: 4 }}>天然卫星轨道</div>
-                <CfgSlider label="线宽" min={0.5} max={3} step={0.1} cfgKey="moonOrbitWidth" />
-                <CfgSlider label="亮度" min={0} max={1} step={0.05} cfgKey="moonOrbitOpacity" />
-                <CfgSlider label="消失距离" min={50} max={500} step={10} cfgKey="moonOrbitHideDist" />
+                <CfgStepper label="线宽" min={0.5} max={3} step={0.1} cfgKey="moonOrbitWidth" />
+                <CfgStepper label="亮度" min={0} max={1} step={0.05} cfgKey="moonOrbitOpacity" />
+                <CfgStepper label="消失距离" min={50} max={500} step={10} cfgKey="moonOrbitHideDist" />
                 <div className="sat-content-divider" />
                 <div style={{ fontSize: 10, color: 'var(--glow)', marginBottom: 4 }}>辅助框与可见性</div>
-                <CfgSlider label="行星辅助框大小" min={10} max={36} step={1} cfgKey="helperSize" />
-                <CfgSlider label="行星名称可见性" min={500} max={20000} step={500} cfgKey="labelHideFrac" />
-                <CfgSlider label="天然卫星可见性" min={500} max={5000} step={100} cfgKey="moonLabelHideFrac" />
-                <CfgSlider label="辅助框可见性" min={500} max={20000} step={500} cfgKey="helperHideFrac" />
+                <CfgStepper label="行星辅助框大小" min={10} max={36} step={1} cfgKey="helperSize" />
+                <CfgStepper label="行星名称可见性" min={500} max={20000} step={500} cfgKey="labelHideFrac" />
+                <CfgStepper label="天然卫星可见性" min={500} max={5000} step={100} cfgKey="moonLabelHideFrac" />
+                <CfgStepper label="辅助框可见性" min={500} max={20000} step={500} cfgKey="helperHideFrac" />
               </>)}
 
               {settingsTab === 'sats' && (<>
@@ -2550,13 +2572,13 @@ export default function App() {
                 </div>
                 <div className="sat-content-divider" />
                 <div style={{ fontSize: 10, color: 'var(--glow)', marginBottom: 4 }}>轨道与轨迹</div>
-                <CfgSlider label="轨道亮度" min={0} max={0.5} step={0.01} cfgKey="satOrbitOpacity" />
-                <CfgSlider label="轨迹亮度" min={0} max={1} step={0.05} cfgKey="satTrailOpacity" />
+                <CfgStepper label="轨道亮度" min={0} max={0.5} step={0.01} cfgKey="satOrbitOpacity" />
+                <CfgStepper label="轨迹亮度" min={0} max={1} step={0.05} cfgKey="satTrailOpacity" />
                 <div className="sat-content-divider" />
                 <div style={{ fontSize: 10, color: 'var(--glow)', marginBottom: 4 }}>标记与可见性</div>
-                <CfgSlider label="选择框大小" min={6} max={24} step={1} cfgKey="bracketSize" />
-                <CfgSlider label="名称可见性" min={5000} max={20000} step={100} cfgKey="satLabelHideFrac" />
-                <CfgSlider label="选择框可见性" min={100} max={1000} step={50} cfgKey="satBracketHideFrac" />
+                <CfgStepper label="选择框大小" min={6} max={24} step={1} cfgKey="bracketSize" />
+                <CfgStepper label="名称可见性" min={5000} max={20000} step={100} cfgKey="satLabelHideFrac" />
+                <CfgStepper label="选择框可见性" min={100} max={1000} step={50} cfgKey="satBracketHideFrac" />
               </>)}
 
               {settingsTab === 'general' && (<>
@@ -2581,7 +2603,7 @@ export default function App() {
                 </div>
                 <div className="sat-content-divider" />
                 <label className="mobile-toggle"><input type="checkbox" onChange={() => (window as any).__toggleSound()} /><span>开启音效</span></label>
-                <VolSlider label="音量" min={0} max={1} step={0.05} defaultValue={0.15} onChange={v => (window as any).__setVolume(v)} />
+                <VolStepper label="音量" min={0} max={1} step={0.05} defaultValue={0.15} onChange={v => (window as any).__setVolume(v)} />
                 <div className="sat-content-divider" />
                 <div style={{ fontSize: 9, color: 'var(--text-dim)', marginBottom: 4 }}>曲目</div>
                 {TRACKS_LIST.map((tr, i) => (
