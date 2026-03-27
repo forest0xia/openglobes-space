@@ -30,6 +30,16 @@ const TRACKS_LIST = [
 ];
 const BASE = import.meta.env.BASE_URL;
 
+const SPEED_PRESETS = [
+  { v: 1, label: '1秒' }, { v: 15, label: '15秒' }, { v: 30, label: '30秒' },
+  { v: 60, label: '1分钟' }, { v: 300, label: '5分钟' }, { v: 900, label: '15分钟' },
+  { v: 1800, label: '30分钟' }, { v: 3600, label: '1小时' }, { v: 7200, label: '2小时' },
+  { v: 21600, label: '6小时' }, { v: 43200, label: '12小时' }, { v: 86400, label: '1天' },
+  { v: 172800, label: '2天' }, { v: 259200, label: '3天' }, { v: 604800, label: '1周' },
+  { v: 1209600, label: '2周' }, { v: 2592000, label: '1个月' }, { v: 7776000, label: '3个月' },
+  { v: 15552000, label: '6个月' }, { v: 31557600, label: '1年' },
+];
+
 // Texture file map — loaded from public/textures/
 const TEX_FILES: Record<string, string> = {
   sun: 'sun.jpg', mercury: 'mercury.jpg', venus: 'venus.jpg',
@@ -78,6 +88,31 @@ const PR = PROBES.map((p, idx) => {
   return { n: p.name, cn: p.nameCn, col: h2n(p.color), dist: fb.distance, ang: fb.angle, y: (idx % 3 - 1) * 6, desc: p.desc, launched: p.launched, orb: undefined as number | undefined, od: 0, emoji: p.emoji };
 });
 
+// Stable component — defined outside App to prevent remount on re-render
+function CfgSlider({ label, min, max, step, defaultValue, cfgKey }: { label: string; min: number; max: number; step: number; defaultValue: number; cfgKey: string }) {
+  const [val, setVal] = useState(defaultValue);
+  return (
+    <div className="settings-row">
+      <div className="settings-label"><span>{label}</span><span className="settings-val">{val}</span></div>
+      <input type="range" min={min} max={max} step={step} value={val} onChange={e => {
+        const v = parseFloat(e.target.value);
+        setVal(v);
+        if ((window as any).__cfg) (window as any).__cfg[cfgKey] = v;
+      }} />
+    </div>
+  );
+}
+
+function VolSlider({ label, min, max, step, defaultValue, onChange }: { label: string; min: number; max: number; step: number; defaultValue: number; onChange: (v: number) => void }) {
+  const [val, setVal] = useState(defaultValue);
+  return (
+    <div className="settings-row">
+      <div className="settings-label"><span>{label}</span><span className="settings-val">{val}</span></div>
+      <input type="range" min={min} max={max} step={step} value={val} onChange={e => { const v = parseFloat(e.target.value); setVal(v); onChange(v); }} />
+    </div>
+  );
+}
+
 export default function App() {
   const canvasRef = useRef<HTMLDivElement>(null);
   const introRef = useRef<HTMLDivElement>(null);
@@ -113,7 +148,7 @@ export default function App() {
   (window as any).__openInfo = () => { closeAllPanels('info'); infoRef.current?.classList.add('open'); setInfoHint(false); };
   const [toast, setToast] = useState<{ title: string; text: string } | null>(null);
   const [satTab, setSatTab] = useState('beidou');
-  const [settingsTab, setSettingsTab] = useState('display');
+  const [settingsTab, setSettingsTab] = useState('planets');
   const [infoHint, setInfoHint] = useState(false);
   const [showStatus, setShowStatus] = useState(typeof window !== 'undefined' && window.innerWidth > 768);
   const [starlinkLoading, setStarlinkLoading] = useState(false);
@@ -294,6 +329,8 @@ export default function App() {
     const meshes: THREE.Mesh[] = [];
     const glowMeshes: THREE.Mesh[] = [];
     const orbitLines: (THREE.Line | Line2)[] = [];
+    // Cache planet indices (avoid findIndex every frame)
+    const EARTH_IDX: number = P.findIndex(p => p.id === 'earth');
     // (glow outlines removed)
     let earthCloudMesh: THREE.Mesh | null = null;
     let moonMesh: THREE.Mesh | null = null;
@@ -900,7 +937,7 @@ export default function App() {
         // Compute ALL initial positions before showing (prevents blinking)
         setStarlinkProgress(70);
         const initNow = new Date();
-        const eIdxSL = P.findIndex(pp => pp.id === 'earth');
+        const eIdxSL = EARTH_IDX;
         const epSL = meshes[eIdxSL].position;
         const scSL = baseScale(eIdxSL);
         for (let si = 0; si < slCount; si++) {
@@ -971,7 +1008,7 @@ export default function App() {
       focSatIdx = idx;
       tT.copy(sm.position);
       // Zoom to show satellite near Earth — use Earth visual radius as reference
-      const eIdxZ = P.findIndex(pp => pp.id === 'earth');
+      const eIdxZ = EARTH_IDX;
       const earthVisR = baseScale(eIdxZ) * earthSceneR;
       tD = earthVisR * 0.5; // half Earth radius — close orbit view
       // Camera on the far side from Earth (behind satellite, looking down at Earth)
@@ -1042,7 +1079,7 @@ export default function App() {
     function updateLabels() {
       if (!showLabels) { labelEls.forEach(el => el.style.display = 'none'); return; }
       // Pre-compute Earth screen size for satellite/moon label hiding
-      const earthIdxL = P.findIndex(p => p.id === 'earth');
+      const earthIdxL = EARTH_IDX;
       const earthScreenL = earthIdxL >= 0 ? getScreenSize(meshes[earthIdxL], cam, baseScale(earthIdxL) * P[earthIdxL].r) : 999;
 
       allLabelTargets.forEach(({ mesh, type }, i) => {
@@ -1062,7 +1099,7 @@ export default function App() {
         if (objScreenSz < threshold) { el.style.display = 'none'; return; }
         labelVec.setFromMatrixPosition(mesh.matrixWorld);
         // Occluded by a planet? Hide label
-        if (isOccludedByPlanet(labelVec.clone())) { el.style.display = 'none'; return; }
+        if (isOccludedByPlanet(labelVec)) { el.style.display = 'none'; return; }
         labelVec.project(cam);
         if (labelVec.z > 1) { el.style.display = 'none'; return; } // behind camera
         const x = (labelVec.x * .5 + .5) * innerWidth;
@@ -1389,28 +1426,7 @@ export default function App() {
     // ═══════ CONTROLS ═══════
     // Speed presets: each value = how many real seconds per animation second
     // 1 = real-time, 86400 = 1 day/s, 2592000 = 1 month/s, etc.
-    const SPEED_PRESETS = [
-      { v: 1, label: '1秒' },
-      { v: 15, label: '15秒' },
-      { v: 30, label: '30秒' },
-      { v: 60, label: '1分' },
-      { v: 300, label: '5分' },
-      { v: 900, label: '15分' },
-      { v: 1800, label: '30分' },
-      { v: 3600, label: '1时' },
-      { v: 7200, label: '2时' },
-      { v: 21600, label: '6时' },
-      { v: 43200, label: '12时' },
-      { v: 86400, label: '1天' },
-      { v: 172800, label: '2天' },
-      { v: 259200, label: '3天' },
-      { v: 604800, label: '1周' },
-      { v: 1209600, label: '2周' },
-      { v: 2592000, label: '1月' },
-      { v: 7776000, label: '3月' },
-      { v: 15552000, label: '6月' },
-      { v: 31557600, label: '1年' },
-    ];
+    // SPEED_PRESETS is defined at module level
     let spdIdx = 3; // default: 1分/秒 (index 3 after adding 15秒/30秒)
     let spd = SPEED_PRESETS[spdIdx].v;
     let paused = false;
@@ -1418,9 +1434,10 @@ export default function App() {
     const EARTH_RATE = 2 * Math.PI / 31557600;
 
     function updSpd() {
-      spdTxtRef.current!.textContent = SPEED_PRESETS[spdIdx].label + '/秒';
+      if (spdTxtRef.current) spdTxtRef.current.textContent = SPEED_PRESETS[spdIdx].label + '/秒';
       const sliderPos = spdIdx / (SPEED_PRESETS.length - 1);
-      tSliderRef.current!.value = String(sliderPos);
+      const thumb = (window as any).__spdThumb as HTMLDivElement | undefined;
+      if (thumb) thumb.style.left = `${sliderPos * 100}%`;
     }
     (window as any).__changeSpd = (dir: number) => {
       spdIdx = Math.max(0, Math.min(SPEED_PRESETS.length - 1, spdIdx + dir));
@@ -1484,7 +1501,7 @@ export default function App() {
 
     function updateSatBrackets(sd: typeof satDataRef.current, camera: THREE.Camera, earthScale: number) {
       // Show brackets when Earth > 1/1000 screen, hide when smaller
-      const eIdx4 = P.findIndex(p => p.id === 'earth');
+      const eIdx4 = EARTH_IDX;
       const earthScreen = getScreenSize(meshes[eIdx4], camera, earthSceneR * earthScale);
       const showBrackets = earthScreen > innerHeight / cfg.satBracketHideFrac;
 
@@ -1504,7 +1521,7 @@ export default function App() {
         if (!sm || !sm.visible || !showBrackets || !showHelpers) { el.style.display = 'none'; continue; }
 
         bracketVec.setFromMatrixPosition(sm.matrixWorld);
-        if (isOccludedByPlanet(bracketVec.clone())) { el.style.display = 'none'; continue; }
+        if (isOccludedByPlanet(bracketVec)) { el.style.display = 'none'; continue; }
         bracketVec.project(camera);
         if (bracketVec.z > 1) { el.style.display = 'none'; continue; }
 
@@ -1533,26 +1550,22 @@ export default function App() {
     // (satSize removed — brackets always shown)
     // Visibility thresholds from cfg
 
-    // Check if a world-space point is occluded by any visible planet (behind it from camera's view)
+    // Check if a world-space point is occluded by any visible planet (zero-allocation)
     function isOccludedByPlanet(worldPos: THREE.Vector3): boolean {
-      const cp = cam.position;
+      const cpx = cam.position.x, cpy = cam.position.y, cpz = cam.position.z;
+      const wpx = worldPos.x - cpx, wpy = worldPos.y - cpy, wpz = worldPos.z - cpz;
+      const pointDist = Math.sqrt(wpx * wpx + wpy * wpy + wpz * wpz);
+      if (pointDist < 0.001) return false;
       for (let pi = 0; pi < meshes.length; pi++) {
         const pm = meshes[pi];
         if (!pm.visible) continue;
         const pr = baseScale(pi) * P[pi].r;
         if (pr < 0.001) continue;
-        // Vector from camera to planet and camera to point
-        const camToPlanet = pm.position.clone().sub(cp);
-        const camToPoint = worldPos.clone().sub(cp);
-        const planetDist = camToPlanet.length();
-        const pointDist = camToPoint.length();
-        // Point must be farther than planet
-        if (pointDist <= planetDist) continue;
-        // Check angular separation — if point is within the planet's angular radius, it's occluded
-        const dot = camToPlanet.dot(camToPoint) / (planetDist * pointDist);
-        const angularR = Math.asin(Math.min(pr / planetDist, 1));
-        const angularSep = Math.acos(Math.min(Math.max(dot, -1), 1));
-        if (angularSep < angularR) return true;
+        const ppx = pm.position.x - cpx, ppy = pm.position.y - cpy, ppz = pm.position.z - cpz;
+        const planetDist = Math.sqrt(ppx * ppx + ppy * ppy + ppz * ppz);
+        if (pointDist <= planetDist || planetDist < pr) continue;
+        const dot = (ppx * wpx + ppy * wpy + ppz * wpz) / (planetDist * pointDist);
+        if (dot > Math.cos(Math.asin(Math.min(pr / planetDist, 1)))) return true;
       }
       return false;
     }
@@ -1614,10 +1627,10 @@ export default function App() {
       helperEntries.push({
         el, nameEl,
         getMesh: () => moonMesh!,
-        getWorldR: () => baseScale(P.findIndex(pp => pp.id === 'earth')) * 0.27,
+        getWorldR: () => baseScale(EARTH_IDX) * 0.27,
         color: '#AAAAAA',
         onClick: () => showMoonInfo(),
-        name: '月球', type: 'moon', parentIdx: P.findIndex(pp => pp.id === 'earth'),
+        name: '月球', type: 'moon', parentIdx: EARTH_IDX,
       });
     }
 
@@ -1677,7 +1690,7 @@ export default function App() {
         if (h.type === 'planet' && screenSz < innerHeight / cfg.helperHideFrac) { h.el.style.display = 'none'; continue; }
         // Don't show if behind camera
         helperVec.setFromMatrixPosition(mesh.matrixWorld);
-        if (isOccludedByPlanet(helperVec.clone())) { h.el.style.display = 'none'; continue; }
+        if (isOccludedByPlanet(helperVec)) { h.el.style.display = 'none'; continue; }
         helperVec.project(cam);
         if (helperVec.z > 1) { h.el.style.display = 'none'; continue; }
 
@@ -1737,7 +1750,7 @@ export default function App() {
           const olm = (orbitLines[i - 1] as any).material;
           if (olm?.linewidth !== undefined) olm.linewidth = cfg.planetOrbitWidth;
           // Use darkenHex to simulate opacity (avoids Line2 white dot artifact with transparent:true)
-          if (olm?.color) olm.color.setHex(darkenHex(p.col, cfg.planetOrbitOpacity));
+          if (olm?.color && olm._lastOpacity !== cfg.planetOrbitOpacity) { olm.color.setHex(darkenHex(p.col, cfg.planetOrbitOpacity)); olm._lastOpacity = cfg.planetOrbitOpacity; }
         }
       });
 
@@ -1749,7 +1762,7 @@ export default function App() {
 
       // Moon orbital motion
       if (moonMesh) {
-        const earthIdx = P.findIndex(pp => pp.id === 'earth');
+        const earthIdx = EARTH_IDX;
         const moonAngle = t * EARTH_RATE * 13.37; // Moon orbits ~13.37x per Earth year
         const earthPos = meshes[earthIdx].position;
         const eScale = baseScale(earthIdx);
@@ -1771,7 +1784,7 @@ export default function App() {
           moonOrbitLine.scale.setScalar(eScale);
           moonOrbitLine.visible = showOrbits && !moonTooSmall && cD < cfg.moonOrbitHideDist;
           const moOlm = (moonOrbitLine as any).material;
-          if (moOlm) { moOlm.linewidth = cfg.moonOrbitWidth; moOlm.color.setHex(darkenHex(0x888888, cfg.moonOrbitOpacity)); }
+          if (moOlm) { moOlm.linewidth = cfg.moonOrbitWidth; if (moOlm._lastOp !== cfg.moonOrbitOpacity) { moOlm.color.setHex(darkenHex(0x888888, cfg.moonOrbitOpacity)); moOlm._lastOp = cfg.moonOrbitOpacity; } }
         }
       }
 
@@ -1806,7 +1819,7 @@ export default function App() {
           if (nmOlm) {
             nmOlm.linewidth = cfg.moonOrbitWidth;
             const bc = naturalMoonOrbits[i].userData.baseColor;
-            if (bc !== undefined) nmOlm.color.setHex(darkenHex(bc, cfg.moonOrbitOpacity));
+            if (bc !== undefined && nmOlm._lastOp !== cfg.moonOrbitOpacity) { nmOlm.color.setHex(darkenHex(bc, cfg.moonOrbitOpacity)); nmOlm._lastOp = cfg.moonOrbitOpacity; }
           }
         }
         // Visibility: hide when screen size < innerHeight / cfg.helperHideFrac
@@ -1816,7 +1829,7 @@ export default function App() {
 
       const tAngle = t * EARTH_RATE; // normalized orbital angle progress
       // Hide all probes when Earth < 1/5000 screen
-      const earthScreenForProbes = getScreenSize(meshes[P.findIndex(pp => pp.id === 'earth')], cam, baseScale(P.findIndex(pp => pp.id === 'earth')) * P.find(pp => pp.id === 'earth')!.r);
+      const earthScreenForProbes = getScreenSize(meshes[EARTH_IDX], cam, baseScale(EARTH_IDX) * P[EARTH_IDX].r);
       PR.forEach((pr, i) => {
         const m = probeMeshes[i];
         if (!layers.probe || earthScreenForProbes < innerHeight / cfg.helperHideFrac) { m.visible = false; return; }
@@ -1837,7 +1850,7 @@ export default function App() {
       const sd = satDataRef.current;
       if (sd.meshes.length > 0) {
         const now = new Date(simStartMs + t * 1000);
-        const eIdx = P.findIndex(p => p.id === 'earth');
+        const eIdx = EARTH_IDX;
         const ep = meshes[eIdx].position;
         const sc = baseScale(eIdx);
         // Satellite visual size — proportional to Earth, very small
@@ -1871,18 +1884,15 @@ export default function App() {
           const distFromEarth = Math.sqrt(dxE * dxE + dyE * dyE + dzE * dzE);
           if (distFromEarth < 0.001 || distFromEarth > 200 * sc) { sm.visible = false; continue; }
 
-          // Occlusion: hide satellite if it's behind Earth relative to camera
+          // Occlusion: hide satellite if it's behind Earth (zero-allocation)
           const earthR = earthSceneR * sc;
-          const cp = cam.position;
-          const camToEarth = new THREE.Vector3(ep.x - cp.x, ep.y - cp.y, ep.z - cp.z);
-          const camToSat = new THREE.Vector3(pos.x - cp.x, pos.y - cp.y, pos.z - cp.z);
-          const camEarthDist = camToEarth.length();
-          if (camEarthDist > earthR * 1.5) { // only check when not too close to Earth
-            const dot = camToEarth.dot(camToSat) / (camEarthDist * camToSat.length());
-            if (dot > 0.98 && camToSat.length() > camEarthDist) {
-              // Satellite is roughly behind Earth from camera's perspective
-              sm.visible = false; continue;
-            }
+          const cex = ep.x - cam.position.x, cey = ep.y - cam.position.y, cez = ep.z - cam.position.z;
+          const csx = pos.x - cam.position.x, csy = pos.y - cam.position.y, csz = pos.z - cam.position.z;
+          const camEarthDist = Math.sqrt(cex * cex + cey * cey + cez * cez);
+          if (camEarthDist > earthR * 1.5) {
+            const camSatDist = Math.sqrt(csx * csx + csy * csy + csz * csz);
+            const dot = (cex * csx + cey * csy + cez * csz) / (camEarthDist * camSatDist);
+            if (dot > 0.98 && camSatDist > camEarthDist) { sm.visible = false; continue; }
           }
           sm.visible = true;
 
@@ -2008,7 +2018,7 @@ export default function App() {
 
       // Satellite orbit lines follow Earth position
       if (sd.orbitLines.length > 0) {
-        const eIdx3 = P.findIndex(p => p.id === 'earth');
+        const eIdx3 = EARTH_IDX;
         const ep2 = meshes[eIdx3].position;
         const sc2 = baseScale(eIdx3);
         sd.orbitLines.forEach(ol => {
@@ -2192,8 +2202,9 @@ export default function App() {
     }).catch(() => {});
     if (satCountRef.current) satCountRef.current.textContent = '— 颗卫星追踪中';
     // Default: focus on Earth after intro
-    const earthStartIdx = P.findIndex(p => p.id === 'earth');
+    const earthStartIdx = EARTH_IDX;
     setTimeout(() => { if (earthStartIdx >= 0) focusObj(earthStartIdx); }, 2400);
+    setTimeout(() => updSpd(), 100); // set initial dial position
     anim();
 
     return () => { cancelAnimationFrame(animId); window.removeEventListener('resize', onResize); ren.dispose(); canvasRef.current?.removeChild(ren.domElement); audio.pause(); audio.src = ''; };
@@ -2246,6 +2257,7 @@ export default function App() {
           el.style.right = 'auto';
           el.style.transform = 'none';
           const onMove = (ev: PointerEvent) => {
+            ev.preventDefault();
             el.style.left = (ev.clientX - offsetX) + 'px';
             el.style.top = (ev.clientY - offsetY) + 'px';
           };
@@ -2273,11 +2285,31 @@ export default function App() {
       </div>
 
       <div className="timebar">
-        <button className="tb" onClick={() => (window as any).__changeSpd(-1)}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="11,19 2,12 11,5"/><polygon points="22,19 13,12 22,5"/></svg></button>
         <button className="tb on" ref={playBtnRef} onClick={() => (window as any).__togglePlay()}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="6" y1="4" x2="6" y2="20"/><line x1="18" y1="4" x2="18" y2="20"/></svg></button>
-        <button className="tb" onClick={() => (window as any).__changeSpd(1)}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="13,19 22,12 13,5"/><polygon points="2,19 11,12 2,5"/></svg></button>
-        <input type="range" className="tslider" ref={tSliderRef} min="0" max="1" step="0.01" defaultValue="0.06" onInput={e => (window as any).__spdSlider((e.target as HTMLInputElement).value)} />
-        <div className="tspeed" ref={spdTxtRef}>1×</div>
+        <div className="speed-dial" ref={tSliderRef} onPointerDown={e => {
+          e.preventDefault();
+          const el = e.currentTarget;
+          const rect = el.getBoundingClientRect();
+          const setFromX = (x: number) => {
+            const frac = Math.max(0, Math.min(1, (x - rect.left) / rect.width));
+            (window as any).__spdSlider(String(frac));
+          };
+          setFromX(e.clientX);
+          const onMove = (ev: PointerEvent) => { ev.preventDefault(); setFromX(ev.clientX); };
+          const onUp = () => { window.removeEventListener('pointermove', onMove); window.removeEventListener('pointerup', onUp); };
+          window.addEventListener('pointermove', onMove);
+          window.addEventListener('pointerup', onUp);
+        }}>
+          <div className="speed-dial-track">
+            {SPEED_PRESETS.map((_, i) => (
+              <div key={i} className="speed-dial-tick" style={{ left: `${(i / (SPEED_PRESETS.length - 1)) * 100}%`, height: i % 3 === 0 ? 10 : 6 }} />
+            ))}
+          </div>
+          <div className="speed-dial-thumb" ref={el => {
+            if (el) (window as any).__spdThumb = el;
+          }} />
+        </div>
+        <div className="tspeed" ref={spdTxtRef}>1分/秒</div>
         <button className="tb" onClick={() => (window as any).__resetCam()}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg></button>
       </div>
 
@@ -2300,7 +2332,7 @@ export default function App() {
             const ox = e.clientX - rect.left, oy = e.clientY - rect.top;
             el.style.transition = 'none';
             el.style.left = rect.left + 'px'; el.style.top = rect.top + 'px'; el.style.right = 'auto';
-            const onMove = (ev: PointerEvent) => { el.style.left = (ev.clientX - ox) + 'px'; el.style.top = (ev.clientY - oy) + 'px'; };
+            const onMove = (ev: PointerEvent) => { ev.preventDefault(); el.style.left = (ev.clientX - ox) + 'px'; el.style.top = (ev.clientY - oy) + 'px'; };
             const onUp = () => { el.style.transition = ''; window.removeEventListener('pointermove', onMove); window.removeEventListener('pointerup', onUp); };
             window.addEventListener('pointermove', onMove); window.addEventListener('pointerup', onUp);
           }} />
@@ -2457,7 +2489,7 @@ export default function App() {
             const ox = e.clientX - rect.left, oy = e.clientY - rect.top;
             el.style.transition = 'none';
             el.style.left = rect.left + 'px'; el.style.top = rect.top + 'px'; el.style.right = 'auto';
-            const onMove = (ev: PointerEvent) => { el.style.left = (ev.clientX - ox) + 'px'; el.style.top = (ev.clientY - oy) + 'px'; };
+            const onMove = (ev: PointerEvent) => { ev.preventDefault(); el.style.left = (ev.clientX - ox) + 'px'; el.style.top = (ev.clientY - oy) + 'px'; };
             const onUp = () => { el.style.transition = ''; window.removeEventListener('pointermove', onMove); window.removeEventListener('pointerup', onUp); };
             window.addEventListener('pointermove', onMove); window.addEventListener('pointerup', onUp);
           }} />
@@ -2485,20 +2517,20 @@ export default function App() {
                 </div>
                 <div className="sat-content-divider" />
                 <div style={{ fontSize: 10, color: 'var(--glow)', marginBottom: 4 }}>行星轨道</div>
-                <div className="settings-row"><span>线宽</span><input type="range" min="0.5" max="4" step="0.1" defaultValue="1.5" onChange={e => { (window as any).__cfg.planetOrbitWidth = parseFloat(e.target.value); }} /></div>
-                <div className="settings-row"><span>亮度</span><input type="range" min="0" max="1" step="0.05" defaultValue="0.45" onChange={e => { (window as any).__cfg.planetOrbitOpacity = parseFloat(e.target.value); }} /></div>
-                <div className="settings-row"><span>消失距离</span><input type="range" min="100" max="2000" step="50" defaultValue="800" onChange={e => { (window as any).__cfg.planetOrbitHideDist = parseInt(e.target.value); }} /></div>
+                <CfgSlider label="线宽" min={0.5} max={4} step={0.1} defaultValue={1.5} cfgKey="planetOrbitWidth" />
+                <CfgSlider label="亮度" min={0} max={1} step={0.05} defaultValue={0.45} cfgKey="planetOrbitOpacity" />
+                <CfgSlider label="消失距离" min={100} max={2000} step={50} defaultValue={800} cfgKey="planetOrbitHideDist" />
                 <div className="sat-content-divider" />
                 <div style={{ fontSize: 10, color: 'var(--glow)', marginBottom: 4 }}>天然卫星轨道</div>
-                <div className="settings-row"><span>线宽</span><input type="range" min="0.5" max="3" step="0.1" defaultValue="1" onChange={e => { (window as any).__cfg.moonOrbitWidth = parseFloat(e.target.value); }} /></div>
-                <div className="settings-row"><span>亮度</span><input type="range" min="0" max="1" step="0.05" defaultValue="0.45" onChange={e => { (window as any).__cfg.moonOrbitOpacity = parseFloat(e.target.value); }} /></div>
-                <div className="settings-row"><span>消失距离</span><input type="range" min="50" max="500" step="10" defaultValue="300" onChange={e => { (window as any).__cfg.moonOrbitHideDist = parseInt(e.target.value); }} /></div>
+                <CfgSlider label="线宽" min={0.5} max={3} step={0.1} defaultValue={1} cfgKey="moonOrbitWidth" />
+                <CfgSlider label="亮度" min={0} max={1} step={0.05} defaultValue={0.45} cfgKey="moonOrbitOpacity" />
+                <CfgSlider label="消失距离" min={50} max={500} step={10} defaultValue={300} cfgKey="moonOrbitHideDist" />
                 <div className="sat-content-divider" />
                 <div style={{ fontSize: 10, color: 'var(--glow)', marginBottom: 4 }}>辅助框与可见性</div>
-                <div className="settings-row"><span>行星辅助框大小</span><input type="range" min="10" max="36" step="1" defaultValue="18" onChange={e => { (window as any).__cfg.helperSize = parseInt(e.target.value); }} /></div>
-                <div className="settings-row"><span>行星名称可见性</span><input type="range" min="500" max="20000" step="500" defaultValue="5000" onChange={e => { (window as any).__cfg.labelHideFrac = parseInt(e.target.value); }} /></div>
-                <div className="settings-row"><span>天然卫星可见性</span><input type="range" min="500" max="5000" step="100" defaultValue="2000" onChange={e => { (window as any).__cfg.moonLabelHideFrac = parseInt(e.target.value); }} /></div>
-                <div className="settings-row"><span>辅助框可见性</span><input type="range" min="500" max="20000" step="500" defaultValue="5000" onChange={e => { (window as any).__cfg.helperHideFrac = parseInt(e.target.value); }} /></div>
+                <CfgSlider label="行星辅助框大小" min={10} max={36} step={1} defaultValue={18} cfgKey="helperSize" />
+                <CfgSlider label="行星名称可见性" min={500} max={20000} step={500} defaultValue={5000} cfgKey="labelHideFrac" />
+                <CfgSlider label="天然卫星可见性" min={500} max={5000} step={100} defaultValue={2000} cfgKey="moonLabelHideFrac" />
+                <CfgSlider label="辅助框可见性" min={500} max={20000} step={500} defaultValue={5000} cfgKey="helperHideFrac" />
               </>)}
 
               {settingsTab === 'sats' && (<>
@@ -2508,13 +2540,13 @@ export default function App() {
                 </div>
                 <div className="sat-content-divider" />
                 <div style={{ fontSize: 10, color: 'var(--glow)', marginBottom: 4 }}>轨道与轨迹</div>
-                <div className="settings-row"><span>轨道亮度</span><input type="range" min="0" max="0.5" step="0.01" defaultValue="0.15" onChange={e => { (window as any).__cfg.satOrbitOpacity = parseFloat(e.target.value); }} /></div>
-                <div className="settings-row"><span>轨迹亮度</span><input type="range" min="0" max="1" step="0.05" defaultValue="0.6" onChange={e => { (window as any).__cfg.satTrailOpacity = parseFloat(e.target.value); }} /></div>
+                <CfgSlider label="轨道亮度" min={0} max={0.5} step={0.01} defaultValue={0.15} cfgKey="satOrbitOpacity" />
+                <CfgSlider label="轨迹亮度" min={0} max={1} step={0.05} defaultValue={0.6} cfgKey="satTrailOpacity" />
                 <div className="sat-content-divider" />
                 <div style={{ fontSize: 10, color: 'var(--glow)', marginBottom: 4 }}>标记与可见性</div>
-                <div className="settings-row"><span>选择框大小</span><input type="range" min="6" max="24" step="1" defaultValue="12" onChange={e => { (window as any).__cfg.bracketSize = parseInt(e.target.value); }} /></div>
-                <div className="settings-row"><span>名称可见性</span><input type="range" min="50" max="2000" step="50" defaultValue="100" onChange={e => { (window as any).__cfg.satLabelHideFrac = parseInt(e.target.value); }} /></div>
-                <div className="settings-row"><span>选择框可见性</span><input type="range" min="50" max="2000" step="50" defaultValue="100" onChange={e => { (window as any).__cfg.satBracketHideFrac = parseInt(e.target.value); }} /></div>
+                <CfgSlider label="选择框大小" min={6} max={24} step={1} defaultValue={12} cfgKey="bracketSize" />
+                <CfgSlider label="名称可见性" min={50} max={2000} step={50} defaultValue={100} cfgKey="satLabelHideFrac" />
+                <CfgSlider label="选择框可见性" min={50} max={2000} step={50} defaultValue={100} cfgKey="satBracketHideFrac" />
               </>)}
 
               {settingsTab === 'general' && (<>
@@ -2535,7 +2567,7 @@ export default function App() {
                 </div>
                 <div className="sat-content-divider" />
                 <label className="mobile-toggle"><input type="checkbox" onChange={() => (window as any).__toggleSound()} /><span>开启音效</span></label>
-                <div className="settings-row"><span>音量</span><input type="range" min="0" max="1" step="0.05" defaultValue="0.15" onChange={e => (window as any).__setVolume(parseFloat(e.target.value))} /></div>
+                <VolSlider label="音量" min={0} max={1} step={0.05} defaultValue={0.15} onChange={v => (window as any).__setVolume(v)} />
                 <div className="sat-content-divider" />
                 <div style={{ fontSize: 9, color: 'var(--text-dim)', marginBottom: 4 }}>曲目</div>
                 {TRACKS_LIST.map((tr, i) => (
