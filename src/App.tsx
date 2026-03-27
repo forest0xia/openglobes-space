@@ -14,10 +14,6 @@ import { LineGeometry } from 'three/examples/jsm/lines/LineGeometry.js';
 import { h2n, darkenHex, TRACKS_LIST, BASE, SPEED_PRESETS, TEX_FILES, procTex, P, PR } from './config/constants';
 import { addAtmosphere, addSurfaceAtmo, PLANET_ATMO_CONFIGS } from './shaders/atmosphere';
 import { CfgStepper, VolStepper, CfgToggle } from './components/Controls';
-import { Timebar } from './components/Timebar';
-import { InfoPanel } from './components/InfoPanel';
-import { getScreenSize, isOccludedByPlanet } from './scene/overlays';
-
 // Constants, data transforms, and UI components imported from extracted modules
 
 export default function App() {
@@ -1298,7 +1294,6 @@ export default function App() {
         const el = document.createElement('div');
         el.className = 'sat-bracket';
         el.onclick = () => (window as any).__focusSat(idx);
-        // Name label inside bracket (same positioning pattern as helper names)
         const nameEl = document.createElement('div');
         nameEl.className = 'sat-bracket-name';
         const sat = sd.sats[idx];
@@ -1329,7 +1324,7 @@ export default function App() {
         const bs = cfg.bracketSize;
         el.style.width = bs + 'px'; el.style.height = bs + 'px';
         (el.style as any).translate = `${x - bs / 2}px ${y - bs / 2}px`;
-        el.style.borderColor = sd.sats[i]?.color || '#fff';
+        el.style.color = sd.sats[i]?.color || '#fff';
       }
     }
 
@@ -1660,8 +1655,6 @@ export default function App() {
         // Hide all satellites + trails when Earth is too small on screen or speed too high
         const earthScreenForSats = getScreenSize(meshes[eIdx], cam, earthSceneR * sc);
         const hideAllSats = satSkip || earthScreenForSats < innerHeight / cfg.satBracketHideFrac;
-        // At speed > 2h/s, hide satellite labels and brackets (too fast to read)
-        const hideSatUI = spd > 7200;
 
         for (let i = 0; i < sd.sats.length; i++) {
           const sm = sd.meshes[i];
@@ -1817,7 +1810,7 @@ export default function App() {
 
       // Satellite orbit lines follow Earth position
       // At speed > 30min/s: show satellite orbits instead of trails
-      const showSatOrbitsAuto = spd > 1800 && !hideAllSats;
+      const showSatOrbitsAuto = spd > 1800 && !satSkip;
       if (showSatOrbitsAuto && sd.orbitLines.length === 0 && sd.sats.length > 0) {
         computeSatOrbits(); // lazy compute on first need
       }
@@ -2084,7 +2077,7 @@ export default function App() {
   return (
     <>
       <div className="intro" ref={introRef}>
-        <div className="intro-line"><span className="intro-word intro-title w1">OPENGLOBES</span></div>
+        <div className="intro-line"><span className="intro-word intro-title w1">Open Globes</span></div>
         <div className="intro-line"><span className="intro-word w2">此 刻 太 空</span></div>
         <div className="intro-pulse" style={{ marginTop: 24 }}></div>
         <div id="__introProgress" style={{ marginTop: 16, fontSize: 11, color: 'var(--text-dim)', fontFamily: 'var(--font-cn)', opacity: 0.6, letterSpacing: 1 }}>加载中...</div>
@@ -2094,7 +2087,7 @@ export default function App() {
 
       <div className="chrome-top">
         <div className="brand">
-          <div className="brand-en">OpenGlobes</div>
+          <div className="brand-en">Open Globes</div>
           <div className="brand-cn">此刻太空</div>
         </div>
         <div className="layers">

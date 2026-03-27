@@ -8,10 +8,9 @@ interface InfoPanelProps {
   iFactRef: React.RefObject<HTMLDivElement | null>;
   iExtrasRef: React.RefObject<HTMLDivElement | null>;
   infoHint: boolean;
-  setInfoHint: React.Dispatch<React.SetStateAction<boolean>>;
 }
 
-export function InfoPanel({ infoRef, iNameRef, iSubRef, iGridRef, iFactRef, iExtrasRef, infoHint, setInfoHint }: InfoPanelProps) {
+export function InfoPanel({ infoRef, iNameRef, iSubRef, iGridRef, iFactRef, iExtrasRef, infoHint }: InfoPanelProps) {
   return (
     <>
       {/* Info hint icon — appears when an object is selected, click to open details */}
