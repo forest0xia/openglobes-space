@@ -13,6 +13,10 @@ const GROUPS = [
   { id: 'gps', url: 'https://celestrak.org/NORAD/elements/gp.php?GROUP=gps-ops&FORMAT=json' },
   { id: 'starlink', url: 'https://celestrak.org/NORAD/elements/gp.php?GROUP=starlink&FORMAT=json' },
   { id: 'visual', url: 'https://celestrak.org/NORAD/elements/gp.php?GROUP=visual&FORMAT=json' },
+  { id: 'weather', url: 'https://celestrak.org/NORAD/elements/gp.php?GROUP=weather&FORMAT=json' },
+  { id: 'resource', url: 'https://celestrak.org/NORAD/elements/gp.php?GROUP=resource&FORMAT=json' },
+  { id: 'science', url: 'https://celestrak.org/NORAD/elements/gp.php?GROUP=science&FORMAT=json' },
+  { id: 'geodetic', url: 'https://celestrak.org/NORAD/elements/gp.php?GROUP=geodetic&FORMAT=json' },
 ];
 
 async function fetchGroup(group) {

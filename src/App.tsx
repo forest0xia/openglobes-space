@@ -199,14 +199,14 @@ export default function App() {
   const [starlinkTotal, setStarlinkTotal] = useState(0);
   const [probesVisible, setProbesVisible] = useState(false);
   const [satellites, setSatellites] = useState<SatRecord[]>([]);
-  const [satGroups, setSatGroups] = useState<Record<string, boolean>>({ beidou: true, stations: true, gps: false, starlink: false, visual: false });
+  const [satGroups, setSatGroups] = useState<Record<string, boolean>>({ beidou: true, stations: true, gps: false, starlink: false, visual: false, weather: false, resource: false, science: false, geodetic: false });
 
   // Store refs accessible from inside useEffect
   const satDataRef = useRef<{
     sats: SatRecord[]; meshes: THREE.Mesh[]; groups: Record<string, boolean>;
     orbitLines: THREE.Line[]; trailLines: THREE.Line[];
     starlinkPoints?: THREE.Points; starlinkSats?: SatRecord[]; starlinkPositions?: Float32Array;
-  }>({ sats: [], meshes: [], groups: { beidou: true, stations: true, gps: false, starlink: false, visual: false }, orbitLines: [], trailLines: [] });
+  }>({ sats: [], meshes: [], groups: { beidou: true, stations: true, gps: false, starlink: false, visual: false, weather: false, resource: false, science: false, geodetic: false }, orbitLines: [], trailLines: [] });
 
   useEffect(() => {
     // Tunable settings — exposed on window for UI sliders
@@ -1969,7 +1969,7 @@ export default function App() {
           // Per-satellite jitter values (used for both position and trail)
           const isStation = sat.groupId === 'stations';
           const seed = i * 7919;
-          const jitAmount = earthSceneR * sc * (isStation ? 0.1 : 0.03);
+          const jitAmount = earthSceneR * sc * (isStation ? 0.03 : 0.01);
           const radialJit = (Math.abs(Math.sin(seed)) * 0.8 + 0.2) * jitAmount;
           const tanJit = jitAmount * 0.3;
 
@@ -2413,7 +2413,7 @@ export default function App() {
           <div className="sat-layout">
             <div className="sat-sidebar">
               <div className="sat-col-title">分类</div>
-              {['beidou', 'probes', 'stations', 'starlink', 'gps', 'visual'].map(tid => {
+              {['beidou', 'probes', 'stations', 'starlink', 'gps', 'visual', 'weather', 'resource', 'science', 'geodetic'].map(tid => {
                 if (tid === 'probes') return (
                   <button key="probes" className={`sat-tab ${satTab === 'probes' ? 'active' : ''}`} onClick={() => setSatTab('probes')}>
                     <span className="sat-tab-row"><span className={`sat-tab-dot ${probesVisible ? '' : 'off'}`} style={{ background: 'linear-gradient(135deg, #81C784, #CE93D8, #FFB74D)' }} />探测器</span>
@@ -2462,6 +2462,10 @@ export default function App() {
                   gps: '美国GPS导航系统。MEO约20,200km，31颗在轨。',
                   starlink: `SpaceX星链互联网卫星，LEO约550km。CelesTrak收录约${starlinkTotal || '10,000'}颗，启用后自动过滤退役和调轨中的卫星，仅展示在300-800km轨道正常运行的卫星。`,
                   visual: '地面肉眼可见的明亮卫星。多在LEO 200-2000km。',
+                  weather: '全球气象观测卫星。分布在LEO极轨和GEO静止轨道，包括风云、NOAA、GOES等系列。',
+                  resource: '地球资源与对地观测卫星。包括Landsat、Sentinel、高分等系列，多在LEO太阳同步轨道。',
+                  science: '科学研究卫星。包括哈勃、费米伽马射线等空间望远镜和科学实验平台。',
+                  geodetic: '大地测量卫星。用于精密定位、地球重力场测量和地壳运动监测。',
                 };
                 const refs: Record<string, string> = {
                   beidou: '数据来源：CelesTrak · celestrak.org',
@@ -2469,6 +2473,10 @@ export default function App() {
                   gps: '数据来源：CelesTrak · GPS Operational',
                   starlink: '数据来源：CelesTrak · Starlink Group',
                   visual: '数据来源：CelesTrak · 100 Brightest',
+                  weather: '数据来源：CelesTrak · Weather',
+                  resource: '数据来源：CelesTrak · Earth Resources',
+                  science: '数据来源：CelesTrak · Science',
+                  geodetic: '数据来源：CelesTrak · Geodetic',
                 };
                 const groupSats = satellites.filter(s => s.groupId === g.id);
                 return (<>

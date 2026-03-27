@@ -26,6 +26,10 @@ export const SAT_GROUPS: SatGroup[] = [
   { id: 'gps', label: 'GPS', labelCn: 'GPS', color: '#3B82F6', url: 'https://celestrak.org/NORAD/elements/gp.php?GROUP=gps-ops&FORMAT=json' },
   { id: 'starlink', label: 'Starlink', labelCn: 'Starlink', color: '#8B5CF6', url: 'https://celestrak.org/NORAD/elements/gp.php?GROUP=starlink&FORMAT=json' },
   { id: 'visual', label: 'Brightest', labelCn: '明亮卫星', color: '#10B981', url: 'https://celestrak.org/NORAD/elements/gp.php?GROUP=visual&FORMAT=json' },
+  { id: 'weather', label: 'Weather', labelCn: '气象卫星', color: '#06B6D4', url: 'https://celestrak.org/NORAD/elements/gp.php?GROUP=weather&FORMAT=json' },
+  { id: 'resource', label: 'Earth Resources', labelCn: '地球资源', color: '#84CC16', url: 'https://celestrak.org/NORAD/elements/gp.php?GROUP=resource&FORMAT=json' },
+  { id: 'science', label: 'Science', labelCn: '科学卫星', color: '#E879F9', url: 'https://celestrak.org/NORAD/elements/gp.php?GROUP=science&FORMAT=json' },
+  { id: 'geodetic', label: 'Geodetic', labelCn: '大地测量', color: '#FB923C', url: 'https://celestrak.org/NORAD/elements/gp.php?GROUP=geodetic&FORMAT=json' },
 ];
 
 export interface SatRecord {
