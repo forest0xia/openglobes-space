@@ -131,6 +131,31 @@ function VolStepper({ label, min, max, step, defaultValue, onChange }: { label: 
   );
 }
 
+// Toggle that reads/writes window.__cfg — survives panel remount
+function CfgToggle({ label, cfgKey, onToggle }: { label: string; cfgKey: string; onToggle?: () => void }) {
+  const cfg = (window as any).__cfg;
+  const inputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (inputRef.current) inputRef.current.checked = cfg?.[cfgKey] ?? false;
+  });
+  return (
+    <label className="mobile-toggle">
+      <input type="checkbox" ref={inputRef} onChange={() => {
+        if (onToggle) {
+          // onToggle handles both local var and cfg
+          onToggle();
+        } else {
+          // No callback — toggle cfg directly
+          if (cfg) cfg[cfgKey] = !cfg[cfgKey];
+        }
+        // Sync checkbox with cfg (onToggle may have changed it)
+        if (inputRef.current && cfg) inputRef.current.checked = cfg[cfgKey];
+      }} />
+      <span>{label}</span>
+    </label>
+  );
+}
+
 export default function App() {
   const canvasRef = useRef<HTMLDivElement>(null);
   const introRef = useRef<HTMLDivElement>(null);
@@ -201,8 +226,12 @@ export default function App() {
       satBracketHideFrac: 100,
       planetOrbitHideDist: 5000,
       moonOrbitHideDist: 300,
-      invertH: false,  // invert horizontal drag
-      invertV: false,  // invert vertical drag
+      invertH: false,
+      invertV: false,
+      showLabels: true,
+      showOrbits: true,
+      showHelpers: true,
+      showTrails: true,
     };
     const scene = new THREE.Scene();
     const cam = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, .1, 2000);
@@ -790,18 +819,25 @@ export default function App() {
       }
     });
 
+    // ═══════ TRAILS TOGGLE ═══════
+    let showTrails = true;
+    (window as any).__toggleTrails = () => {
+      showTrails = !showTrails;
+      cfg.showTrails = showTrails;
+    };
+
     // ═══════ HELPERS (selection circles for small planets/moons) ═══════
     let showHelpers = true;
     (window as any).__toggleHelpers = () => {
       showHelpers = !showHelpers;
-      document.getElementById('__helperBtn')?.classList.toggle('on', showHelpers);
+      cfg.showHelpers = showHelpers;
     };
 
     // ═══════ ORBIT TOGGLES ═══════
     let showOrbits = true; // default on
     (window as any).__toggleOrbits = () => {
       showOrbits = !showOrbits;
-      document.getElementById('__orbitBtn')?.classList.toggle('on', showOrbits);
+      cfg.showOrbits = showOrbits;
       // Planet orbits
       orbitLines.forEach(ol => { ol.visible = showOrbits; });
       // Expose orbit updaters for settings panel
@@ -876,11 +912,10 @@ export default function App() {
     const earthP = P.find(p => p.id === 'earth')!;
     const earthSceneR = earthP.r;
 
-    const TRAIL_LEN = 30; // number of trail positions to keep
-    const satTrails: Float32Array[] = []; // flat xyz arrays per satellite
+    const TRAIL_LEN = 80;
+    const satTrails: Float32Array[] = [];
     const satTrailLines: THREE.Line[] = [];
-    const satTrailIdx: number[] = [];
-    const satTrailReady: boolean[] = []; // true after first full trail computation
+    const satTrailReady: boolean[] = [];
 
     fetchAllSatellites().then(sats => {
       setSatellites(sats);
@@ -899,7 +934,6 @@ export default function App() {
         // Trail with fading shader
         const trailArr = new Float32Array(TRAIL_LEN * 3);
         satTrails.push(trailArr);
-        satTrailIdx.push(0);
         satTrailReady.push(false);
         const trailGeo = new THREE.BufferGeometry();
         trailGeo.setAttribute('position', new THREE.BufferAttribute(trailArr, 3));
@@ -1092,7 +1126,7 @@ export default function App() {
     });
     (window as any).__toggleLabels = () => {
       showLabels = !showLabels;
-      document.getElementById('__labelBtn')?.classList.toggle('on', showLabels);
+      cfg.showLabels = showLabels;
     };
     const labelVec = new THREE.Vector3();
     function updateLabels() {
@@ -1793,7 +1827,7 @@ export default function App() {
       // Cloud rotation: slight drift relative to Earth surface (wind)
       if (earthCloudMesh) {
         const earthRotRate = 2 * Math.PI / (0.99727 * 86400);
-        earthCloudMesh.rotation.y = t * earthRotRate * 1.02; // 2% faster than surface
+        earthCloudMesh.rotation.y = t * earthRotRate * 1.002; // 0.2% faster — subtle atmospheric drift
       }
 
       // Moon orbital motion
@@ -1963,26 +1997,21 @@ export default function App() {
           // Visibility is governed by hideAllSats (Earth screen size < 1/100)
           // No per-satellite screen-size check — satellites are always tiny but shown when Earth is visible
 
-          // Trail: hide and clear at high speeds (> 2hr/s = 7200)
-          if (satTrails[i] && spd > 7200) {
-            if (satTrailLines[i]) { satTrailLines[i].visible = false; satTrailLines[i].geometry.setDrawRange(0, 0); }
-            satTrails[i].fill(0); satTrailReady[i] = false;
-          }
-          // Trail: compute at normal speeds
-          if (satTrails[i] && spd <= 7200) {
+          // Trail: SGP4 past positions (staggered recomputation)
+          if (satTrails[i] && showTrails && spd < 3600) {
             const lastIdx = TRAIL_LEN - 1;
-            // Compute full trail (staggered across frames, or on first frame for this satellite)
-            if (!satTrailReady[i] || frameCount % 60 === (i % 60)) {
+            if (!satTrailReady[i] || frameCount % 30 === (i % 30)) {
               const sr = sat.satrec as any;
               const periodSec = sr.no ? (2 * Math.PI / sr.no) * 60 : 5400;
-              const trailDuration = periodSec * 0.4;
+              // Trail shows 30% of one orbit
+              const trailDuration = periodSec * 0.3;
               let allValid = true;
               for (let s = 0; s <= lastIdx; s++) {
                 const pastTime = new Date(now.getTime() - (lastIdx - s) / lastIdx * trailDuration * 1000);
                 const pastEci = getSatPositionECI(sat, pastTime);
                 if (pastEci) {
                   const pp = eciToScene(pastEci, ep, earthSceneR, sc);
-                  // Relative to Earth + same radial jitter as satellite position
+                  // Apply same radial+tangential jitter as satellite position
                   let rx = pp.x - ep.x, ry = pp.y - ep.y, rz = pp.z - ep.z;
                   const rd = Math.sqrt(rx * rx + ry * ry + rz * rz);
                   if (rd > 0.001) {
@@ -1996,21 +2025,20 @@ export default function App() {
                   satTrails[i][s * 3 + 2] = rz;
                 } else { allValid = false; }
               }
-              // Snap last point to exact current position (relative to Earth)
+              // Last point = exact current position
               satTrails[i][lastIdx * 3] = pos.x - ep.x;
               satTrails[i][lastIdx * 3 + 1] = pos.y - ep.y;
               satTrails[i][lastIdx * 3 + 2] = pos.z - ep.z;
               if (allValid) satTrailReady[i] = true;
             } else {
-              // Between recomputations, only update the last point (relative to Earth)
+              // Between recomputations, update last point to track satellite
               satTrails[i][lastIdx * 3] = pos.x - ep.x;
               satTrails[i][lastIdx * 3 + 1] = pos.y - ep.y;
               satTrails[i][lastIdx * 3 + 2] = pos.z - ep.z;
             }
             const line = satTrailLines[i];
             if (line) {
-              line.visible = satTrailReady[i] && spd <= 7200;
-              // Position trail at Earth center (vertices are relative to Earth)
+              line.visible = satTrailReady[i];
               line.position.copy(ep);
               line.geometry.attributes.position.needsUpdate = true;
               line.geometry.setDrawRange(0, TRAIL_LEN);
@@ -2018,6 +2046,8 @@ export default function App() {
               if (mat.uniforms?.activePoints) mat.uniforms.activePoints.value = TRAIL_LEN;
               if (mat.uniforms?.opacity) mat.uniforms.opacity.value = cfg.satTrailOpacity;
             }
+          } else if (satTrailLines[i]) {
+            satTrailLines[i].visible = false;
           }
         }
 
@@ -2599,14 +2629,15 @@ export default function App() {
                   <div className="sat-content-sub">全局显示开关</div>
                 </div>
                 <div className="sat-content-divider" />
-                <label className="mobile-toggle"><input type="checkbox" defaultChecked onChange={() => (window as any).__toggleLabels()} /><span>名称标签</span></label>
-                <label className="mobile-toggle"><input type="checkbox" defaultChecked onChange={() => (window as any).__toggleOrbits()} /><span>轨道线</span></label>
-                <label className="mobile-toggle"><input type="checkbox" defaultChecked id="__helperBtn" onChange={() => (window as any).__toggleHelpers()} /><span>选择辅助框</span></label>
+                <CfgToggle label="名称标签" cfgKey="showLabels" onToggle={() => (window as any).__toggleLabels()} />
+                <CfgToggle label="轨道线" cfgKey="showOrbits" onToggle={() => (window as any).__toggleOrbits()} />
+                <CfgToggle label="选择辅助框" cfgKey="showHelpers" onToggle={() => (window as any).__toggleHelpers()} />
+                <CfgToggle label="人造卫星轨迹线" cfgKey="showTrails" onToggle={() => (window as any).__toggleTrails()} />
                 <label className="mobile-toggle"><input type="checkbox" checked={showStatus} onChange={() => setShowStatus(v => !v)} /><span>状态信息栏</span></label>
                 <div className="sat-content-divider" />
                 <div style={{ fontSize: 10, color: 'var(--glow)', marginBottom: 4 }}>单指旋转控制</div>
-                <label className="mobile-toggle"><input type="checkbox" onChange={e => { (window as any).__cfg.invertH = e.target.checked; }} /><span>反转左右旋转</span></label>
-                <label className="mobile-toggle"><input type="checkbox" onChange={e => { (window as any).__cfg.invertV = e.target.checked; }} /><span>反转上下旋转</span></label>
+                <CfgToggle label="反转左右旋转" cfgKey="invertH" />
+                <CfgToggle label="反转上下旋转" cfgKey="invertV" />
               </>)}
               {settingsTab === 'audio' && (<>
                 <div className="sat-content-header">
