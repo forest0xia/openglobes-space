@@ -14,7 +14,9 @@ import { LineGeometry } from 'three/examples/jsm/lines/LineGeometry.js';
 import { h2n, darkenHex, TRACKS_LIST, BASE, SPEED_PRESETS, TEX_FILES, procTex, P, PR } from './config/constants';
 import { addAtmosphere, addSurfaceAtmo, PLANET_ATMO_CONFIGS } from './shaders/atmosphere';
 import { CfgStepper, VolStepper, CfgToggle } from './components/Controls';
-// Constants, data transforms, and UI components imported from extracted modules
+// ═══ Module-level constants (accessible in both useEffect and JSX) ═══
+const GID_STARLINK = 'starlink';
+const GID_STATIONS = 'stations';
 
 export default function App() {
   const canvasRef = useRef<HTMLDivElement>(null);
@@ -70,6 +72,21 @@ export default function App() {
   }>({ sats: [], meshes: [], groups: { beidou: true, weather: true, stations: false, starlink: false, gps: false, visual: false, resource: false, science: false, geodetic: false }, orbitLines: [] });
 
   useEffect(() => {
+    // ═══ SHARED CONSTANTS — single source of truth for thresholds ═══
+    const PARENT_HIDE_PX = 3;          // hide child helpers/mesh when parent < this px
+    const SAT_SIZE_FACTOR = 0.0002;    // satellite visual size relative to Earth
+    const SAT_MIN_SIZE_FACTOR = 0.001; // minimum satellite size relative to Earth
+    const STATION_SCALE = 3;           // stations are this × bigger than regular sats
+    const STARLINK_DOT_FACTOR = 0.002; // Starlink instance size relative to Earth
+    const STARLINK_LIST_PREVIEW = 25;  // how many Starlink shown in sidebar list
+    const SPEED_HIDE_TRAILS = 1800;    // spd > this: hide trails, show orbit lines
+    const SPEED_HIDE_UI = 1800;        // spd > this: hide sat labels/brackets
+    const SPEED_SKIP_SATS = 86400;     // spd >= this: skip all satellite SGP4
+    // SOLAR_SYSTEM_SCALE removed — use SUN_HIDE_PX for consistent galaxy-scale detection
+    const KEPLER_ITERATIONS = 5;       // Newton's method iterations for Kepler eq
+    const FOCUS_MODEL_SCALE = 0.002;   // focused satellite model size (fraction of screen)
+    const SUN_HIDE_PX = 5;            // sun < this px: galaxy scale, hide solar system
+    const TRAIL_LEN = 80;             // SGP4 sample points per trail
     // Tunable settings — exposed on window for UI sliders
     const cfg = (window as any).__cfg = {
       planetOrbitWidth: 1.5,   // px
@@ -84,7 +101,7 @@ export default function App() {
       satLabelHideFrac: 20000,   // smaller = sat stuff disappears sooner
       moonLabelHideFrac: 2000, // larger = moons stay visible longer
       helperHideFrac: 5000,
-      satBracketHideFrac: 100,
+      satBracketHideFrac: 20,
       planetOrbitHideDist: 5000,
       moonOrbitHideDist: 300,
       invertH: false,
@@ -97,7 +114,7 @@ export default function App() {
     const scene = new THREE.Scene();
     const isMobile = innerWidth < 768 || /Mobi|Android/i.test(navigator.userAgent);
     const cam = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, .1, 2000);
-    const ren = new THREE.WebGLRenderer({ antialias: !isMobile, alpha: true, powerPreference: 'high-performance' });
+    const ren = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' });
     ren.setSize(innerWidth, innerHeight); ren.setPixelRatio(Math.min(devicePixelRatio, isMobile ? 1.5 : 2));
     ren.toneMapping = THREE.ACESFilmicToneMapping; ren.toneMappingExposure = 1.4;
     canvasRef.current!.appendChild(ren.domElement);
@@ -536,7 +553,6 @@ export default function App() {
     const earthP = P.find(p => p.id === 'earth')!;
     const earthSceneR = earthP.r;
 
-    const TRAIL_LEN = 80;
     const satTrails: (Float32Array | null)[] = [];
     const satTrailLines: (THREE.Line | null)[] = [];
     const satTrailReady: boolean[] = [];
@@ -623,8 +639,8 @@ export default function App() {
       const eIdx0 = EARTH_IDX;
       const ep0 = meshes[eIdx0].position;
       const sc0 = baseScale(eIdx0);
-      const initBaseSatSize = sc0 * earthSceneR * 0.0002;
-      const initMinSatSize = earthSceneR * sc0 * 0.001;
+      const initBaseSatSize = sc0 * earthSceneR * SAT_SIZE_FACTOR;
+      const initMinSatSize = earthSceneR * sc0 * SAT_MIN_SIZE_FACTOR;
       sats.forEach((sat, i) => {
         const sm = satMeshes[i];
         if (!sm) return;
@@ -633,8 +649,8 @@ export default function App() {
           const pos = eciToScene(eci, ep0, earthSceneR, sc0);
           sm.position.set(pos.x, pos.y, pos.z);
           // Set correct scale immediately (same logic as animation loop)
-          const isStation = sat.groupId === 'stations';
-          const thisSize = isStation ? initBaseSatSize * 3 : initBaseSatSize;
+          const isStation = sat.groupId === GID_STATIONS;
+          const thisSize = isStation ? initBaseSatSize * STATION_SCALE : initBaseSatSize;
           sm.scale.setScalar(Math.max(thisSize, isStation ? initMinSatSize * 2 : initMinSatSize));
           sm.visible = true;
         }
@@ -701,7 +717,7 @@ export default function App() {
       if (document.getElementById('__satPanel')) setSatGroups({ ...g });
 
       // On-demand load for Starlink: InstancedMesh for 10,000+ satellites (single draw call, real 3D shapes)
-      if (gid === 'starlink' && g[gid] && !satDataRef.current.starlinkMesh) {
+      if (gid === GID_STARLINK && g[gid] && !satDataRef.current.starlinkMesh) {
         setStarlinkLoading(true);
         setStarlinkProgress(0);
         const newSats = await fetchStarlinkSatellites();
@@ -714,7 +730,7 @@ export default function App() {
         // Visible size: ~3px when Earth fills screen. Earth visual radius = sc * earthSceneR.
         // At fit distance, 1px ≈ earthVisR * 2 / screenH. So 3px ≈ earthVisR * 0.006.
         const earthVisR = baseScale(EARTH_IDX) * earthSceneR;
-        const slDotR = earthVisR * 0.002;
+        const slDotR = earthVisR * STARLINK_DOT_FACTOR;
         const slGeo = new THREE.BoxGeometry(slDotR * 2, slDotR * 2, slDotR * 2); // 12 triangles, efficient
         const slMat = new THREE.MeshBasicMaterial({ color: 0x8B5CF6 });
         const slMesh = new THREE.InstancedMesh(slGeo, slMat, slCount);
@@ -757,8 +773,8 @@ export default function App() {
 
         // Store first 25 for sidebar list preview + total count
         setSatellites(prev => {
-          const withoutSl = prev.filter(s => s.groupId !== 'starlink');
-          return [...withoutSl, ...newSats.slice(0, 25).map(s => ({ ...s, groupId: 'starlink' }))];
+          const withoutSl = prev.filter(s => s.groupId !== GID_STARLINK);
+          return [...withoutSl, ...newSats.slice(0, STARLINK_LIST_PREVIEW).map(s => ({ ...s, groupId: 'starlink' }))];
         });
         if (satCountRef.current) satCountRef.current.textContent = `${satDataRef.current.sats.length + slCount} 颗卫星追踪中`;
         setStarlinkProgress(100);
@@ -767,10 +783,10 @@ export default function App() {
       }
 
       // Starlink: dispose on off, show on on
-      if (gid === 'starlink') {
+      if (gid === GID_STARLINK) {
         if (!g[gid]) {
           disposeStarlink();
-          setSatellites(prev => prev.filter(s => s.groupId !== 'starlink'));
+          setSatellites(prev => prev.filter(s => s.groupId !== GID_STARLINK));
         } else if (satDataRef.current.starlinkMesh) {
           satDataRef.current.starlinkMesh.visible = true;
         }
@@ -820,6 +836,22 @@ export default function App() {
       // Ensure satellite is visible when focused
       sm.visible = true;
 
+      // Restore previous focused satellite before switching
+      if (focSatIdx >= 0 && focSatIdx !== idx) {
+        const prev = satDataRef.current.meshes[focSatIdx];
+        if (prev && prev.userData._focusActive) {
+          const dg = prev.userData._detailGroup as THREE.Group | undefined;
+          if (dg) scene.remove(dg);
+          prev.visible = true;
+          prev.scale.setScalar(prev.userData.baseScale);
+          delete prev.userData._focusActive;
+          delete prev.userData._detailGroup;
+          delete prev.userData.baseScale;
+          delete prev.userData.focScale;
+          delete prev.userData.focInitDist;
+          delete prev.userData.modelRadius;
+        }
+      }
       focIdx = -1; focMoonMesh = null;
       focSatIdx = idx;
       tT.copy(sm.position);
@@ -945,10 +977,11 @@ export default function App() {
       tD = Math.max(zoomMin, Math.min(500000, tD * (1 + delta * zoomPct)));
     }
 
-    ren.domElement.addEventListener('wheel', e => {
-      e.preventDefault();
-      applyZoom(e.deltaY);
-    }, { passive: false });
+    const onWheel = (e: WheelEvent) => { e.preventDefault(); applyZoom(e.deltaY); };
+    ren.domElement.addEventListener('wheel', onWheel, { passive: false });
+    // Forward wheel from overlay elements (brackets/helpers) so zoom works everywhere
+    satBracketsRef.current!.addEventListener('wheel', onWheel, { passive: false });
+    helpersRef.current!.addEventListener('wheel', onWheel, { passive: false });
 
     // Touch: pinch-to-zoom + prevent browser zoom
     let lastPinchDist = 0;
@@ -1307,7 +1340,7 @@ export default function App() {
         const el = bracketEls[i];
         if (!el) continue;
         const sm = sd.meshes[i];
-        if (!sm || !sm.visible || !showBrackets || !showHelpers || spd > 1800) { el.style.display = 'none'; continue; }
+        if (!sm || !sm.visible || !showBrackets || !showHelpers || spd > SPEED_HIDE_UI) { el.style.display = 'none'; continue; }
 
         bracketVec.setFromMatrixPosition(sm.matrixWorld);
         if (isOccludedByPlanet(bracketVec)) { el.style.display = 'none'; continue; }
@@ -1316,9 +1349,6 @@ export default function App() {
 
         const x = (bracketVec.x * .5 + .5) * innerWidth;
         const y = (bracketVec.y * -.5 + .5) * innerHeight;
-
-        // Check if satellite is too small on screen to see
-        // Brackets always shown when satellite is visible (no hide-on-zoom-in)
 
         el.style.display = 'block';
         const bs = cfg.bracketSize;
@@ -1442,7 +1472,7 @@ export default function App() {
         helperEntries.push({
           el, nameEl,
           getMesh: () => nm,
-          getWorldR: () => nm.userData.visualR || 0.1,
+          getWorldR: () => (nm.userData.visualR || 0.1) * nm.scale.x,
           color: col,
           onClick: () => showNaturalMoonInfo(d),
           name: d.cn || d.n, type: 'moon', parentIdx: nm.userData.parentIdx,
@@ -1455,27 +1485,26 @@ export default function App() {
       // Add any new natural moon helpers
       if (naturalMoonMeshes.length > 0) addNaturalMoonHelpers();
 
-      // Hide all planet/moon helpers when zoomed out past solar system scale
-      // When camera distance > Neptune's orbit (601), orbits are visually tiny
-      const allHelpersHidden = cD > 500;
+      // Hide all helpers when sun < SUN_HIDE_PX (galaxy scale, solar system invisible)
+      const allHelpersHidden = getScreenSize(meshes[0], cam, planetVisR[0]) < SUN_HIDE_PX;
 
       for (const h of helperEntries) {
         if (!showHelpers || allHelpersHidden) { h.el.style.display = 'none'; continue; }
         const mesh = h.getMesh();
-        if (!mesh) { h.el.style.display = 'none'; continue; }
+        if (!mesh || !mesh.visible) { h.el.style.display = 'none'; continue; }
 
-        // Moons: hide when parent planet is too small (same rule as labels)
+        // Moons: hide when parent planet < 10px (too small, would overlap planet helper)
         if (h.type === 'moon' && h.parentIdx !== undefined) {
-          const parentScreenSz = getScreenSize(meshes[h.parentIdx], cam, baseScale(h.parentIdx) * P[h.parentIdx].r);
-          if (parentScreenSz < innerHeight / cfg.moonLabelHideFrac) { h.el.style.display = 'none'; continue; }
+          const parentScreenSz = getScreenSize(meshes[h.parentIdx], cam, planetVisR[h.parentIdx]);
+          if (parentScreenSz < PARENT_HIDE_PX) { h.el.style.display = 'none'; continue; }
         }
 
-        // Only show helper when object is too small on screen (< 20px) but not sub-pixel
+        // Show helper when object < helperSize on screen (needs help to click)
+        // Hide when object is large enough to click directly (>= helperSize)
         const worldR = h.getWorldR();
         const screenSz = getScreenSize(mesh, cam, worldR);
-        if (screenSz >= 20) { h.el.style.display = 'none'; continue; }
-        // Hide when truly invisible (sub-pixel) — too zoomed out
-        if (h.type === 'planet' && screenSz < innerHeight / cfg.helperHideFrac) { h.el.style.display = 'none'; continue; }
+        if (screenSz >= cfg.helperSize) { h.el.style.display = 'none'; continue; }
+        // (planet galaxy-scale hide handled by allHelpersHidden above)
         // Don't show if behind camera
         helperVec.setFromMatrixPosition(mesh.matrixWorld);
         if (isOccludedByPlanet(helperVec)) { h.el.style.display = 'none'; continue; }
@@ -1514,7 +1543,7 @@ export default function App() {
         const omega = planetOmega[i];
         // Solve Kepler's equation (Newton's method, 5 iterations)
         let E = meanAnomaly;
-        for (let k = 0; k < 5; k++) E = E - (E - ecc * Math.sin(E) - meanAnomaly) / (1 - ecc * Math.cos(E));
+        for (let k = 0; k < KEPLER_ITERATIONS; k++) E = E - (E - ecc * Math.sin(E) - meanAnomaly) / (1 - ecc * Math.cos(E));
         const nu = 2 * Math.atan2(Math.sqrt(1 + ecc) * Math.sin(E / 2), Math.sqrt(1 - ecc) * Math.cos(E / 2));
         const r = p.d * (1 - ecc * ecc) / (1 + ecc * Math.cos(nu));
         const xOrb = r * Math.cos(nu + omega);
@@ -1567,14 +1596,13 @@ export default function App() {
         // lookAt would work but is expensive per frame. Since orbit is in XZ plane:
         moonMesh.rotation.y = moonAngle + Math.PI;
         moonMesh.scale.setScalar(eScale);
-        // Hide moon based on its own screen size
-        const moonScreenSz = getScreenSize(moonMesh, cam, eScale * 0.27);
-        const moonTooSmall = moonScreenSz < innerHeight / cfg.moonLabelHideFrac;
-        moonMesh.visible = !moonTooSmall;
+        // Hide moon when Earth (parent) < 10px — same rule as all other moons
+        const earthScreenForMoon = getScreenSize(meshes[EARTH_IDX], cam, planetVisR[EARTH_IDX]);
+        moonMesh.visible = earthScreenForMoon >= PARENT_HIDE_PX;
         if (moonOrbitLine) {
           moonOrbitLine.position.copy(earthPos);
           moonOrbitLine.scale.setScalar(eScale);
-          moonOrbitLine.visible = showOrbits && !moonTooSmall && cD < cfg.moonOrbitHideDist;
+          moonOrbitLine.visible = showOrbits && moonMesh.visible && cD < cfg.moonOrbitHideDist;
           const moOlm = (moonOrbitLine as any).material;
           if (moOlm) { moOlm.linewidth = cfg.moonOrbitWidth; if (moOlm._lastOp !== cfg.moonOrbitOpacity) { moOlm.color.setHex(darkenHex(0x888888, cfg.moonOrbitOpacity)); moOlm._lastOp = cfg.moonOrbitOpacity; } }
         }
@@ -1583,17 +1611,15 @@ export default function App() {
       // Natural moons orbital motion (all except Earth's Moon)
       naturalMoonMeshes.forEach((nm, i) => {
         const parentIdx = nm.userData.parentIdx as number;
-        // Early-out: skip computation when parent planet < 5px on screen
-        const parentScreenSz = getScreenSize(meshes[parentIdx], cam, baseScale(parentIdx) * P[parentIdx].r);
-        if (parentScreenSz < 5) { nm.visible = false; if (naturalMoonOrbits[i]) naturalMoonOrbits[i].visible = false; return; }
+        // Hide when parent planet < 10px (same threshold as helper system)
+        const parentScreenSz = getScreenSize(meshes[parentIdx], cam, planetVisR[parentIdx]);
+        if (parentScreenSz < PARENT_HIDE_PX) { nm.visible = false; if (naturalMoonOrbits[i]) naturalMoonOrbits[i].visible = false; return; }
         const nmData = naturalMoonData[i];
         const parentPos = meshes[parentIdx].position;
         const pScale = baseScale(parentIdx);
         const parentP = P[parentIdx];
         const parentPlanet = naturalMoonParentPlanets[i]!;
-        // Orbital angle: use orbital period relative to Earth year
         const orbAngle = t * EARTH_RATE * (365.25 / nmData.orbitalPeriodDays) + i * 1.7;
-        // Real proportional orbital distance
         const distInParentRadii = nmData.distanceKm / parentPlanet.realRadiusKm;
         const orbitDist = distInParentRadii * parentP.r * pScale;
         nm.position.set(
@@ -1602,13 +1628,12 @@ export default function App() {
           parentPos.z + Math.sin(orbAngle) * orbitDist
         );
         nm.scale.setScalar(pScale);
-        // Tidally locked: rotation period = orbital period, face parent
         nm.rotation.y = orbAngle + Math.PI;
-        // Update orbit line position and scale to follow parent
+        nm.visible = true; // visibility controlled by helper system, not here
         if (naturalMoonOrbits[i]) {
           naturalMoonOrbits[i].position.copy(parentPos);
           naturalMoonOrbits[i].scale.setScalar(pScale);
-          naturalMoonOrbits[i].visible = showOrbits && nm.visible && cD < cfg.moonOrbitHideDist;
+          naturalMoonOrbits[i].visible = showOrbits && cD < cfg.moonOrbitHideDist;
           const nmOlm = (naturalMoonOrbits[i] as any).material;
           if (nmOlm) {
             nmOlm.linewidth = cfg.moonOrbitWidth;
@@ -1616,9 +1641,6 @@ export default function App() {
             if (bc !== undefined && nmOlm._lastOp !== cfg.moonOrbitOpacity) { nmOlm.color.setHex(darkenHex(bc, cfg.moonOrbitOpacity)); nmOlm._lastOp = cfg.moonOrbitOpacity; }
           }
         }
-        // Visibility: hide when screen size < innerHeight / cfg.helperHideFrac
-        const nmScreenSz = getScreenSize(nm, cam, pScale * nm.userData.visualR);
-        nm.visible = nmScreenSz >= innerHeight / cfg.moonLabelHideFrac;
       });
 
       const tAngle = t * EARTH_RATE;
@@ -1626,7 +1648,7 @@ export default function App() {
       const earthScreenForProbes = getScreenSize(meshes[EARTH_IDX], cam, planetVisR[EARTH_IDX]);
       PR.forEach((pr, i) => {
         const m = probeMeshes[i];
-        if (!layers.probe || spd > 1800 || earthScreenForProbes < innerHeight / cfg.helperHideFrac) { m.visible = false; return; }
+        if (!layers.probe || spd > SPEED_HIDE_UI || earthScreenForProbes < innerHeight / cfg.helperHideFrac) { m.visible = false; return; }
         m.visible = true;
         if (pr.orb !== undefined) {
           const pp = meshes[pr.orb].position;
@@ -1641,7 +1663,7 @@ export default function App() {
 
       // ═══ Update satellite positions + trails ═══
       const sd = satDataRef.current;
-      const satSkip = spd >= 86400;
+      const satSkip = spd >= SPEED_SKIP_SATS;
       const satInterval = spd < 300 ? 1 : spd < 3600 ? 3 : 10;
       const satThisFrame = !satSkip && (frameCount % satInterval === 0);
 
@@ -1650,7 +1672,7 @@ export default function App() {
         const eIdx = EARTH_IDX;
         const ep = meshes[eIdx].position;
         const sc = baseScale(eIdx);
-        const baseSatSize = sc * earthSceneR * 0.0002;
+        const baseSatSize = sc * earthSceneR * SAT_SIZE_FACTOR;
 
         // Hide all satellites + trails when Earth is too small on screen or speed too high
         const earthScreenForSats = getScreenSize(meshes[eIdx], cam, earthSceneR * sc);
@@ -1668,9 +1690,9 @@ export default function App() {
             continue;
           }
 
-          // Frozen satellite: keep last position, hide trail, skip SGP4
+          // Frozen satellite: hidden (orbit drifted, position unreliable)
           if (satFrozen[i]) {
-            sm.visible = true;
+            sm.visible = false;
             if (satTrailLines[i]) satTrailLines[i]!.visible = false;
             continue;
           }
@@ -1682,13 +1704,14 @@ export default function App() {
           const eci = getSatPositionECI(sat, now);
           if (!eci || !isFinite(eci.x) || !isFinite(eci.y) || !isFinite(eci.z)) { sm.visible = false; continue; }
 
-          // Check altitude deviation — freeze if >1.5x expected
+          // Check altitude deviation — freeze and hide if >1.5x expected
           const eciDistKm = Math.sqrt(eci.x * eci.x + eci.y * eci.y + eci.z * eci.z);
           const actualAltKm = eciDistKm - 6371;
           const expectedAlt = satExpectedAltKm[i];
           if (actualAltKm > expectedAlt * 1.5 || actualAltKm < expectedAlt / 1.5) {
             satFrozen[i] = true;
-            // Keep current position, stop updating
+            sm.visible = false; // hide — position may be wrong
+            if (satTrailLines[i]) satTrailLines[i]!.visible = false;
             continue;
           }
 
@@ -1711,11 +1734,11 @@ export default function App() {
           sm.visible = true;
           sm.position.set(pos.x, pos.y, pos.z);
 
-          const isStation = sat.groupId === 'stations';
+          const isStation = sat.groupId === GID_STATIONS;
           // Stations 3x bigger than regular sats
           // Minimum size scales with Earth: 0.1% of Earth's scene radius (≈6km equiv, ~3px when Earth fills screen)
-          const minSatSize = earthSceneR * sc * 0.001;
-          const thisSize = isStation ? baseSatSize * 3 : baseSatSize;
+          const minSatSize = earthSceneR * sc * SAT_MIN_SIZE_FACTOR;
+          const thisSize = isStation ? baseSatSize * STATION_SCALE : baseSatSize;
           sm.scale.setScalar(Math.max(thisSize, isStation ? minSatSize * 2 : minSatSize));
 
           // Visibility is governed by hideAllSats (Earth screen size < 1/100)
@@ -1723,7 +1746,7 @@ export default function App() {
 
           // Trail: SGP4 past positions, 50% orbit (spd ≤ 30min/s)
           // Recompute frequency scales with speed: fast = more often (keeps trail smooth)
-          if (satTrails[i] && showTrails && spd <= 1800) {
+          if (satTrails[i] && showTrails && spd <= SPEED_HIDE_TRAILS) {
             const trailStagger = spd < 60 ? 60 : spd < 300 ? 20 : 8;
             const lastIdx = TRAIL_LEN - 1;
             if (!satTrailReady[i] || frameCount % trailStagger === (i % trailStagger)) {
@@ -1779,7 +1802,7 @@ export default function App() {
 
         // ═══ Starlink InstancedMesh positions (single draw call, batched) ═══
         if (sd.starlinkMesh) {
-          const slGroupOn = sd.groups['starlink'] ?? false;
+          const slGroupOn = sd.groups[GID_STARLINK] ?? false;
           sd.starlinkMesh.visible = slGroupOn && !hideAllSats;
         }
         if (sd.starlinkMesh?.visible && satThisFrame && sd.starlinkSats && sd.starlinkPositions) {
@@ -1810,7 +1833,7 @@ export default function App() {
 
       // Satellite orbit lines follow Earth position
       // At speed > 30min/s: show satellite orbits instead of trails
-      const showSatOrbitsAuto = spd > 1800 && !satSkip;
+      const showSatOrbitsAuto = spd > SPEED_HIDE_UI && !satSkip;
       if (showSatOrbitsAuto && sd.orbitLines.length === 0 && sd.sats.length > 0) {
         computeSatOrbits(); // lazy compute on first need
       }
@@ -1852,7 +1875,7 @@ export default function App() {
             const bsph = new THREE.Sphere();
             bbox.getBoundingSphere(bsph);
             fsm.userData.modelRadius = Math.max(bsph.radius, 0.015);
-            const targetWorldR = 0.01 * tD * Math.tan(25 * Math.PI / 180); // ~1/100 screen width
+            const targetWorldR = FOCUS_MODEL_SCALE * tD * Math.tan(25 * Math.PI / 180); // ~1/500 screen width
             fsm.userData.focScale = targetWorldR / fsm.userData.modelRadius;
           }
           // Update detail group position + scale each frame
@@ -1958,7 +1981,7 @@ export default function App() {
       const sunScreen = getScreenSize(meshes[0], cam, P[0].r);
 
       // Solar marker — appears when sun is < 3px, grows to stay visible
-      if (sunScreen < 3) {
+      if (sunScreen < SUN_HIDE_PX) {
         solarMarker.visible = true;
         solarMarker.scale.setScalar(Math.max(cD * 0.002, 0.5));
         // Hide all planets and orbits at galaxy scale
@@ -2214,7 +2237,7 @@ export default function App() {
                 return (
                   <button key={g.id} className={`sat-tab ${satTab === g.id ? 'active' : ''}`} onClick={() => setSatTab(g.id)}>
                     <span className="sat-tab-row"><span className={`sat-tab-dot ${satGroups[g.id] ? '' : 'off'}`} style={{ background: g.color }} />{g.labelCn}</span>
-                    <span className="sat-tab-count">{g.id === 'starlink' ? (starlinkTotal || satellites.filter(s => s.groupId === g.id).length) : satellites.filter(s => s.groupId === g.id).length} 颗</span>
+                    <span className="sat-tab-count">{g.id === GID_STARLINK ? (starlinkTotal || satellites.filter(s => s.groupId === g.id).length) : satellites.filter(s => s.groupId === g.id).length} 颗</span>
                   </button>
                 );
               })}
@@ -2280,7 +2303,7 @@ export default function App() {
                     <span>显示</span>
                   </label>
                   {/* Starlink progress bar */}
-                  {g.id === 'starlink' && starlinkLoading && (
+                  {g.id === GID_STARLINK && starlinkLoading && (
                     <div style={{ marginBottom: 8 }}>
                       <div style={{ fontSize: 10, color: 'var(--text-dim)', marginBottom: 4 }}>加载 Starlink 卫星数据... {starlinkProgress}%</div>
                       <div style={{ width: '100%', height: 3, background: 'rgba(94,234,212,0.1)', borderRadius: 2 }}>
@@ -2290,13 +2313,13 @@ export default function App() {
                   )}
                   <div className="sat-content-divider" />
                   <div style={{ fontSize: 9, color: 'var(--text-dim)', marginBottom: 4 }}>
-                    {g.id === 'starlink' && starlinkTotal > 0
+                    {g.id === GID_STARLINK && starlinkTotal > 0
                       ? `预览 · 共 ${starlinkTotal} 颗通过 InstancedMesh 渲染`
                       : `列表 · ${groupSats.length} 颗`}
                   </div>
                   <div className="sat-list">
                     {groupSats.length > 0 ? groupSats.map((s, li) => {
-                      const isStarlink = g.id === 'starlink';
+                      const isStarlink = g.id === GID_STARLINK;
                       const realIdx = isStarlink ? -1 : satellites.indexOf(s);
                       return (
                         <div key={li} className="sat-item" title="" onClick={() => { if (realIdx >= 0) (window as any).__focusSat(realIdx); }}>
@@ -2304,7 +2327,7 @@ export default function App() {
                           <span className="sat-name" title="">{getSatDisplayName(s.name, s.noradId)}</span>
                         </div>
                       );
-                    }) : (g.id === 'starlink' && !starlinkLoading ? <div className="sat-loading" style={{ fontSize: 10 }}>启用后加载全部正常运行的卫星</div> : <div className="sat-loading">加载中...</div>)}
+                    }) : (g.id === GID_STARLINK && !starlinkLoading ? <div className="sat-loading" style={{ fontSize: 10 }}>启用后加载全部正常运行的卫星</div> : <div className="sat-loading">加载中...</div>)}
                   </div>
                 </>);
               })()}
