@@ -64,6 +64,10 @@ export const NATURAL_MOONS: NaturalMoon[] = [
     radiusKm: 561, distanceKm: 377396, orbitalPeriodDays: 2.74, color: '#CCCCBB',
     fact: '土卫四表面有明亮的冰悬崖和暗色的平原，可能在冰壳之下有液态水海洋。' },
 
+  { id: 'iapetus', name: 'Iapetus', nameCn: '土卫八', parentId: 'saturn',
+    radiusKm: 735, distanceKm: 3560820, orbitalPeriodDays: 79.32, color: '#8B8070',
+    fact: '土卫八是太阳系中最神秘的卫星之一，一面极亮一面极暗（阴阳脸），赤道上有一条高达20公里的山脊环绕整颗卫星。' },
+
   // ═══ Uranus (top 2) ═══
   { id: 'titania', name: 'Titania', nameCn: '天卫三', parentId: 'uranus',
     radiusKm: 789, distanceKm: 435910, orbitalPeriodDays: 8.71, color: '#B8B0A8',

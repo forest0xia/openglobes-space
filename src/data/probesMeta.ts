@@ -63,32 +63,32 @@ export const PROBES: ProbeMeta[] = [
   {
     id: 'juice', name: 'JUICE', nameCn: 'JUICE', color: '#80DEEA', emoji: '🧃',
     launched: 2023,
-    desc: 'ESA木星冰卫星探测器，将探索木卫三、木卫四和木卫二。',
-    fallbackPosition: { distance: 30, angle: 2.1 },
+    desc: 'ESA木星冰卫星探测器，将探索木卫三、木卫四和木卫二。2031年抵达木星。',
+    fallbackPosition: { orbitPlanetId: 'jupiter', orbitDist: 8 }, // en route, shown near Jupiter
   },
   {
     id: 'bepi', name: 'BepiColombo', nameCn: '贝皮科伦布', color: '#BCAAA4', emoji: '☿️',
     launched: 2018,
-    desc: 'ESA/JAXA联合水星轨道器，正在飞往水星途中。',
-    fallbackPosition: { distance: 8, angle: 4.5 },
+    desc: 'ESA/JAXA联合水星轨道器，2025年12月进入水星轨道。',
+    fallbackPosition: { orbitPlanetId: 'mercury', orbitDist: 3 }, // arriving at Mercury
   },
   {
     id: 'lucy', name: 'Lucy', nameCn: '露西号', color: '#F48FB1', emoji: '💎',
     launched: 2021,
     desc: '前往木星特洛伊小行星群，探访太阳系形成的"化石"。',
-    fallbackPosition: { distance: 25, angle: 0.3 },
+    fallbackPosition: { orbitPlanetId: 'jupiter', orbitDist: 12 }, // en route to Jupiter Trojans
   },
   {
     id: 'psyche', name: 'Psyche', nameCn: '灵神星探测器', color: '#B0BEC5', emoji: '🪨',
     launched: 2023,
-    desc: '前往金属小行星灵神星，探索行星核心的秘密。',
-    fallbackPosition: { distance: 22, angle: 3.8 },
+    desc: '前往金属小行星灵神星，探索行星核心的秘密。2029年抵达。',
+    fallbackPosition: { orbitPlanetId: 'mars', orbitDist: 8 }, // in asteroid belt near Mars orbit
   },
   {
     id: 'osirisapex', name: 'OSIRIS-APEX', nameCn: 'OSIRIS-APEX', color: '#FF8A65', emoji: '☄️',
     launched: 2016,
-    desc: '完成贝努小行星采样后，正前往阿波菲斯小行星。',
-    fallbackPosition: { distance: 18, angle: 1.8 },
+    desc: '完成贝努小行星采样后，正前往阿波菲斯小行星。2029年抵达。',
+    fallbackPosition: { orbitPlanetId: 'earth', orbitDist: 5 }, // near-Earth asteroid mission
   },
   {
     id: 'solarorbiter', name: 'Solar Orbiter', nameCn: '太阳轨道器', color: '#FFF176', emoji: '🌞',

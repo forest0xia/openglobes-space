@@ -1402,8 +1402,8 @@ export default function App() {
       color: string;
       onClick: () => void;
       name: string;
-      type: 'planet' | 'moon';
-      parentIdx?: number; // planet index for moons
+      type: 'planet' | 'moon' | 'probe';
+      parentIdx?: number; // planet index for moons/probes
     }
     const helperEntries: HelperEntry[] = [];
 
@@ -1480,6 +1480,31 @@ export default function App() {
       });
     }
 
+    // Create helpers for probes
+    PR.forEach((pr, i) => {
+      const col = '#' + pr.col.toString(16).padStart(6, '0');
+      const el = document.createElement('div');
+      el.className = 'obj-helper';
+      el.style.borderColor = col;
+      const nameEl = document.createElement('div');
+      nameEl.className = 'obj-helper-name';
+      nameEl.textContent = pr.cn;
+      nameEl.style.color = col;
+      el.appendChild(nameEl);
+      el.onclick = () => (window as any).__focusProbeByIdx(i);
+      helperContainer.appendChild(el);
+      // Parent: orbitPlanetId or fallback to Sun (index 0)
+      const parentIdx = pr.orb !== undefined ? pr.orb : 0;
+      helperEntries.push({
+        el, nameEl,
+        getMesh: () => probeMeshes[i],
+        getWorldR: () => probeMeshes[i].scale.x,
+        color: col,
+        onClick: () => (window as any).__focusProbeByIdx(i),
+        name: pr.cn, type: 'probe', parentIdx,
+      });
+    });
+
     const helperVec = new THREE.Vector3();
     function updateHelpers() {
       // Add any new natural moon helpers
@@ -1493,8 +1518,8 @@ export default function App() {
         const mesh = h.getMesh();
         if (!mesh || !mesh.visible) { h.el.style.display = 'none'; continue; }
 
-        // Moons: hide when parent planet < 10px (too small, would overlap planet helper)
-        if (h.type === 'moon' && h.parentIdx !== undefined) {
+        // Moons/probes: hide when parent planet < PARENT_HIDE_PX
+        if ((h.type === 'moon' || h.type === 'probe') && h.parentIdx !== undefined) {
           const parentScreenSz = getScreenSize(meshes[h.parentIdx], cam, planetVisR[h.parentIdx]);
           if (parentScreenSz < PARENT_HIDE_PX) { h.el.style.display = 'none'; continue; }
         }
