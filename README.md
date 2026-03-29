@@ -47,7 +47,7 @@ Real-time 3D solar system visualization with satellite tracking, NASA textures, 
 - **Starlink** — 约 10,000 颗 SpaceX 星链卫星，使用 InstancedMesh 单次绘制调用渲染，自动过滤仅显示 300-800km LEO 在轨运行卫星
 - **明亮卫星 (Brightest)** — 地面肉眼可见的明亮卫星
 - **SGP4 实时传播** — 使用 satellite.js 从 TLE 数据计算 ECI 坐标
-- **3D 卫星模型** — ISS、TDRS、Landsat 8 使用 NASA 3D 模型，通用卫星使用 Poly 模型
+- **3D 卫星模型** — 24 个 NASA 3D 模型（ISS、GOES、ICESat-2、Chandra、Terra 等），按卫星类型分配不同模型
 - **跨组去重** — 按 NORAD ID 去重，避免同一颗卫星在多个组中重复显示
 - **纯缓存架构** — 前端**永远不会**直接访问 CelesTrak API。所有卫星 TLE 数据来自静态缓存文件 `public/data/satellites-cache.json`，由 GitHub Actions 每日 06:00 UTC 自动更新
 
@@ -98,6 +98,63 @@ Real-time 3D solar system visualization with satellite tracking, NASA textures, 
 
 开普勒近似用于计算行星位置：基于 J2000 历元的平均经度和角速度率，在长时间尺度上对内行星精度约 0.1 度。
 
+### 3D 卫星/探测器模型 / Spacecraft 3D Models
+
+按需加载：仅在用户聚焦查看卫星时才下载对应模型文件，不影响首屏加载性能。NASA GLB 文件使用 Draco 压缩，需 DRACOLoader 解码。所有 GLB 通过 Git LFS 存储。
+
+| 模型文件 | 来源 | 大小 | 用于卫星组 | 准确性 |
+|---------|------|------|-----------|--------|
+| `iss.glb` | NASA 3D Resources | 465 KB | 空间站 (ISS/CSS/龙飞船/联盟号等) | ⚠️ 所有空间站共用ISS模型，天宫/龙飞船/联盟号/进步号外形实际不同 |
+| `tdrs-a.glb` | NASA 3D Resources | 94 KB | GPS 导航卫星 | ⚠️ 借用 TDRS-A 外形，GPS卫星实际使用 Block IIF/III 设计 |
+| `ssl1300.glb` | NASA 3D Resources | 498 KB | 北斗导航卫星 | ⚠️ SSL-1300 商用卫星平台近似，北斗实际设计不同 |
+| `goes.glb` | NASA 3D Resources | 328 KB | 气象卫星 | ✓ GOES 气象卫星官方模型 |
+| `icesat2.glb` | NASA 3D Resources | 1.4 MB | 大地测量卫星 | ✓ ICESat-2 激光测高卫星官方模型 |
+| `terra.glb` | NASA 3D Resources | 2.1 MB | 明亮卫星 | ⚠️ Terra 地球观测模型，明亮卫星类型多样 |
+| `landsat8.glb` | NASA 3D Resources | 761 KB | 地球资源卫星 | ✓ Landsat 系列官方模型 |
+| `chandra.glb` | NASA 3D Resources | 975 KB | 科学卫星 | ⚠️ 钱德拉X射线望远镜，科学卫星外形各异 |
+| `parker.glb` | NASA 3D Resources | 433 KB | 帕克太阳探测器 | ✓ 官方模型 |
+| `voyager.glb` | NASA 3D Resources | 279 KB | 旅行者 1/2 号 | ✓ 官方模型 |
+| `juno.glb` | NASA 3D Resources | 8.8 MB | 朱诺号探测器 | ✓ 官方模型 |
+| `jwst.glb` | NASA 3D Resources | 4.6 MB | 韦伯望远镜 | ✓ 官方模型 |
+| `perseverance.glb` | NASA 3D Resources | 4.9 MB | 毅力号火星车 | ✓ 官方模型 |
+| `tdrs-satellite.glb` | NASA 3D Resources | 1.7 MB | TDRS 中继卫星 | ✓ 官方模型 |
+
+备用模型（已下载，未分配到卫星组，可用于未来扩展）:
+
+| 模型文件 | 来源 | 大小 | 说明 |
+|---------|------|------|------|
+| `hubble.glb` | NASA Science | 10.9 MB | 哈勃太空望远镜 |
+| `tdrs-b.glb` | NASA 3D Resources | 953 KB | TDRS-B 中继卫星 |
+| `satellite.glb` | Generic | 374 KB | 通用卫星（默认 fallback） |
+| `suomi-npp.glb` | NASA 3D Resources | 2.2 MB | Suomi NPP 极轨气象卫星 |
+| `gpm.glb` | NASA 3D Resources | 2.2 MB | GPM 全球降水测量卫星 |
+| `fermi.glb` | NASA 3D Resources | 1.3 MB | 费米伽马射线望远镜 |
+| `aura.glb` | NASA 3D Resources | 465 KB | Aura 大气化学卫星 |
+| `spitzer.glb` | NASA 3D Resources | 245 KB | 斯皮策红外望远镜 |
+| `tess.glb` | NASA 3D Resources | 202 KB | TESS 系外行星巡天卫星 |
+| `grace.glb` | NASA 3D Resources | 22 KB | GRACE 重力测量卫星 |
+
+**版权**: 所有 NASA 3D 模型根据 [NASA Media Usage Guidelines](https://www.nasa.gov/nasa-brand-center/images-and-media/) 免费使用。
+
+**已知局限**:
+- 同组所有卫星共用一个模型（如所有空间站都显示为ISS）
+- GPS 使用 TDRS-A 模型近似，北斗使用 SSL-1300 商用卫星平台近似
+- 无免费开源的 GPS Block III、北斗-3、天宫空间站 GLB 模型
+- 欢迎贡献更多开源3D模型（GLB格式，需兼容 Three.js GLTFLoader）
+
+### 聚焦缩放配置 / Focus Scale Configuration
+
+| 参数 | 值 | 说明 |
+|------|------|------|
+| `FOCUS_MODEL_SCALE` | `0.05` | 聚焦时模型为屏幕宽度的 1/20（~50px） |
+| 空间站缩放系数 | `0.2` | 空间站聚焦模型缩小到默认的 1/5（防止集群重叠） |
+| 邻近空间站模型 | `15%` of focused | 附近空间站显示小型真实模型 |
+| 缩放衰减 | `1.2x-3x` 二次曲线 | 缩小视角时模型快速缩小 |
+| 空间站 jitter | `0.08 × earthVisR` | 径向向外散开，防止重叠 |
+| Bounding sphere | 单位尺度计算 | `detailGroup.scale.setScalar(1)` 后计算，确保 focScale 准确 |
+| GLB 尺寸匹配 | `multiplyScalar(phMax)` | GLB 缩放到和 procedural placeholder 一样大 |
+| GLB 居中 | `Box3.getCenter → position.sub` | 缩放后重新居中，防止位置偏移 |
+
 ### 行星纹理 / Planet Textures
 
 | 天体 | 纹理 | 来源 |
@@ -147,8 +204,26 @@ Real-time 3D solar system visualization with satellite tracking, NASA textures, 
 | 模型 | 文件 | 来源 | 许可 |
 |------|------|------|------|
 | 国际空间站 (ISS) | `iss.glb` | NASA Science 3D Resources | Public Domain |
-| TDRS 中继卫星 | `tdrs-satellite.glb` | NASA Science 3D Resources | Public Domain |
+| TDRS 中继卫星 | `tdrs-a.glb`, `tdrs-b.glb`, `tdrs-satellite.glb` | NASA Science 3D Resources | Public Domain |
+| SSL-1300 商用卫星 | `ssl1300.glb` | NASA Science 3D Resources | Public Domain |
+| GOES 气象卫星 | `goes.glb` | NASA Science 3D Resources | Public Domain |
+| ICESat-2 测高卫星 | `icesat2.glb` | NASA Science 3D Resources | Public Domain |
+| Terra 地球观测 | `terra.glb` | NASA Science 3D Resources | Public Domain |
 | Landsat 8 | `landsat8.glb` | NASA Science 3D Resources | Public Domain |
+| 钱德拉X射线望远镜 | `chandra.glb` | NASA Science 3D Resources | Public Domain |
+| 哈勃太空望远镜 | `hubble.glb` | NASA Science 3D Resources | Public Domain |
+| Suomi NPP 气象卫星 | `suomi-npp.glb` | NASA Science 3D Resources | Public Domain |
+| GPM 降水测量 | `gpm.glb` | NASA Science 3D Resources | Public Domain |
+| 费米望远镜 | `fermi.glb` | NASA Science 3D Resources | Public Domain |
+| Aura 大气卫星 | `aura.glb` | NASA Science 3D Resources | Public Domain |
+| 斯皮策望远镜 | `spitzer.glb` | NASA Science 3D Resources | Public Domain |
+| TESS 系外行星巡天 | `tess.glb` | NASA Science 3D Resources | Public Domain |
+| GRACE 重力测量 | `grace.glb` | NASA Science 3D Resources | Public Domain |
+| 帕克太阳探测器 | `parker.glb` | NASA Science 3D Resources | Public Domain |
+| 旅行者号 | `voyager.glb` | NASA Science 3D Resources | Public Domain |
+| 朱诺号 | `juno.glb` | NASA Science 3D Resources | Public Domain |
+| 韦伯望远镜 | `jwst.glb` | NASA Science 3D Resources | Public Domain |
+| 毅力号火星车 | `perseverance.glb` | NASA Science 3D Resources | Public Domain |
 | 通用卫星 | `satellite.glb` | Poly/Google | CC BY |
 
 ### 深空背景 / Deep Space Backgrounds
@@ -367,7 +442,7 @@ npm run build
 | 资源 | 许可 | 说明 |
 |------|------|------|
 | NASA 行星纹理及数据 | **Public Domain** | NASA 作品不受美国版权保护 |
-| NASA 3D 模型 (ISS, TDRS, Landsat 8) | **Public Domain** | NASA Science 3D Resources |
+| NASA 3D 模型 (ISS, GOES, ICESat-2, Chandra, Terra, Landsat 8, SSL-1300 等 24 个) | **Public Domain** | NASA Science 3D Resources |
 | Solar System Scope 纹理 | **CC BY 4.0** | 需注明出处 — [Solar System Scope](https://www.solarsystemscope.com/textures/) |
 | Hubble Ultra Deep Field | **Public Domain** | NASA/ESA 公共发布 |
 | NASA Eyes 银河系图像 | **Public Domain** | NASA Eyes on the Solar System |

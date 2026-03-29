@@ -14,13 +14,13 @@ const loadPromises = new Map<string, Promise<THREE.Group>>();
 // Model assignments per satellite group
 const MODEL_MAP: Record<string, string> = {
   stations: 'iss.glb',
-  beidou: 'tdrs-b.glb',       // TDRS-B ≈ BeiDou (borrowed shape)
+  beidou: 'ssl1300.glb',      // SSL-1300 commercial sat bus ≈ BeiDou nav sat
   gps: 'tdrs-a.glb',          // TDRS-A ≈ GPS (borrowed shape)
-  weather: 'satellite.glb',
+  weather: 'goes.glb',        // GOES weather satellite ✓
   resource: 'landsat8.glb',
-  science: 'hubble.glb',
-  geodetic: 'satellite.glb',
-  visual: 'satellite.glb',
+  science: 'chandra.glb',     // Chandra X-ray Observatory (generic science)
+  geodetic: 'icesat2.glb',    // ICESat-2 geodetic satellite ✓
+  visual: 'terra.glb',        // Terra Earth observation (brightest sats vary)
   _default: 'satellite.glb',
 };
 

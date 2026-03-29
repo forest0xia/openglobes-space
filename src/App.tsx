@@ -85,6 +85,7 @@ export default function App() {
     // SOLAR_SYSTEM_SCALE removed — use SUN_HIDE_PX for consistent galaxy-scale detection
     const KEPLER_ITERATIONS = 5;       // Newton's method iterations for Kepler eq
     const FOCUS_MODEL_SCALE = 0.05;    // ~50px at focus distance (math: 0.002→2px, 0.05→50px)
+    const FOCUS_OTHER_SAT_PX = 2;      // other satellites shrink to ~2px when one is focused
     const SUN_HIDE_PX = 5;            // sun < this px: galaxy scale, hide solar system
     const TRAIL_LEN = 80;             // SGP4 sample points per trail
     // Tunable settings — exposed on window for UI sliders
@@ -1370,6 +1371,11 @@ export default function App() {
         el.style.width = bs + 'px'; el.style.height = bs + 'px';
         (el.style as any).translate = `${x - bs / 2}px ${y - bs / 2}px`;
         el.style.color = sd.sats[i]?.color || '#fff';
+        // Hide bracket corners when satellite is large enough on screen (>18px), keep name
+        const dg = sm.userData._detailGroup as THREE.Object3D | undefined;
+        const satWorldR = dg ? dg.scale.x * 0.5 : sm.scale.x * 0.5;
+        const satScreenPx = getScreenSize(sm, camera, satWorldR);
+        el.style.background = satScreenPx > 18 ? 'none' : '';
       }
     }
 
@@ -1717,6 +1723,9 @@ export default function App() {
         const ep = meshes[eIdx].position;
         const sc = baseScale(eIdx);
         const baseSatSize = sc * earthSceneR * SAT_SIZE_FACTOR;
+        // When a satellite is focused, shrink all other boxes to ~2px
+        const fovRad = (cam as THREE.PerspectiveCamera).fov * Math.PI / 180;
+        const focTinySize = focSatIdx >= 0 ? FOCUS_OTHER_SAT_PX * cD * Math.tan(fovRad / 2) / innerHeight : 0;
 
         // Hide all satellites + trails when Earth is too small on screen or speed too high
         const earthScreenForSats = getScreenSize(meshes[eIdx], cam, earthSceneR * sc);
@@ -1796,8 +1805,12 @@ export default function App() {
           // Stations 3x bigger than regular sats
           // Minimum size scales with Earth: 0.1% of Earth's scene radius (≈6km equiv, ~3px when Earth fills screen)
           const minSatSize = earthSceneR * sc * SAT_MIN_SIZE_FACTOR;
-          const thisSize = isStation ? baseSatSize * STATION_SCALE : baseSatSize;
-          sm.scale.setScalar(Math.max(thisSize, isStation ? minSatSize * 2 : minSatSize));
+          if (focTinySize > 0 && i !== focSatIdx) {
+            sm.scale.setScalar(focTinySize);
+          } else {
+            const thisSize = isStation ? baseSatSize * STATION_SCALE : baseSatSize;
+            sm.scale.setScalar(Math.max(thisSize, isStation ? minSatSize * 2 : minSatSize));
+          }
 
           // Visibility is governed by hideAllSats (Earth screen size < 1/100)
           // No per-satellite screen-size check — satellites are always tiny but shown when Earth is visible
