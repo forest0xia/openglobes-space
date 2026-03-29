@@ -1,51 +1,50 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 
 const BASE = import.meta.env.BASE_URL;
 const loader = new GLTFLoader();
+const dracoLoader = new DRACOLoader();
+dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.7/');
+loader.setDRACOLoader(dracoLoader);
 
-// Cache loaded models by URL
 const modelCache = new Map<string, THREE.Group>();
 const loadPromises = new Map<string, Promise<THREE.Group>>();
 
-// Model assignments: which GLB to use for which satellite group/name
+// Model assignments per satellite group
 const MODEL_MAP: Record<string, string> = {
-  stations: 'iss.glb',       // ISS, CSS, etc.
-  beidou: 'satellite.glb',   // generic comm sat
-  gps: 'tdrs-satellite.glb', // TDRS-style for GPS
+  stations: 'iss.glb',
+  beidou: 'tdrs-b.glb',       // TDRS-B ≈ BeiDou (borrowed shape)
+  gps: 'tdrs-a.glb',          // TDRS-A ≈ GPS (borrowed shape)
+  weather: 'satellite.glb',
+  resource: 'landsat8.glb',
+  science: 'hubble.glb',
+  geodetic: 'satellite.glb',
+  visual: 'satellite.glb',
   _default: 'satellite.glb',
 };
 
 /**
- * Load a GLB model, cache it, return a clone.
+ * Load a GLB, normalize to ~1 unit, cache, return clone.
  */
 function loadModel(filename: string): Promise<THREE.Group> {
   const url = `${BASE}models/${filename}`;
-  if (modelCache.has(url)) {
-    return Promise.resolve(modelCache.get(url)!.clone());
-  }
-  if (loadPromises.has(url)) {
-    return loadPromises.get(url)!.then(g => g.clone());
-  }
+  if (modelCache.has(url)) return Promise.resolve(modelCache.get(url)!.clone());
+  if (loadPromises.has(url)) return loadPromises.get(url)!.then(g => g.clone());
   const p = new Promise<THREE.Group>((resolve) => {
     loader.load(url, (gltf) => {
       const model = gltf.scene;
-      // Normalize size: scale so bounding box fits in ~1 unit, then we'll rescale per-satellite
       const box = new THREE.Box3().setFromObject(model);
-      const size = new THREE.Vector3();
-      box.getSize(size);
+      const size = new THREE.Vector3(); box.getSize(size);
       const maxDim = Math.max(size.x, size.y, size.z);
       if (maxDim > 0) model.scale.multiplyScalar(1 / maxDim);
-      // Center
-      const center = new THREE.Vector3();
-      box.getCenter(center);
+      const center = new THREE.Vector3(); box.getCenter(center);
       model.position.sub(center.multiplyScalar(1 / maxDim));
       modelCache.set(url, model);
       resolve(model.clone());
-    }, undefined, () => {
-      // Failed to load — return procedural fallback
-      const fallback = createProceduralSatellite(0xcccccc);
-      resolve(fallback);
+    }, undefined, (err) => {
+      console.warn(`[satModel] Failed to load ${url}:`, err);
+      resolve(createProceduralSatellite(0xcccccc));
     });
   });
   loadPromises.set(url, p);
@@ -53,27 +52,39 @@ function loadModel(filename: string): Promise<THREE.Group> {
 }
 
 /**
- * Create a satellite model for a given group. Returns immediately with a procedural
- * placeholder, then hot-swaps to the real GLB model when loaded.
+ * Create satellite model. Shows procedural placeholder immediately,
+ * then hot-swaps to real GLB when loaded — MATCHED to placeholder size.
  */
 export function createSatelliteModel(color: number, groupId?: string): THREE.Group {
   const container = new THREE.Group();
-  // Start with procedural placeholder
   const placeholder = createProceduralSatellite(color);
   container.add(placeholder);
 
-  // Async load the real model
+  // Measure placeholder size BEFORE async swap
+  const phBox = new THREE.Box3().setFromObject(placeholder);
+  const phSize = new THREE.Vector3(); phBox.getSize(phSize);
+  const phMax = Math.max(phSize.x, phSize.y, phSize.z, 0.001);
+
   const filename = MODEL_MAP[groupId || ''] || MODEL_MAP._default;
   loadModel(filename).then(model => {
+    // loadModel normalized to ~1 unit (scale=1/maxDim, position=centering offset)
+    // Multiply by phMax so model matches placeholder size
+    model.scale.multiplyScalar(phMax);
+    // Re-center: loadModel's centering was for scale=1/maxDim, now scale changed
+    const reBox = new THREE.Box3().setFromObject(model);
+    const reCenter = new THREE.Vector3(); reBox.getCenter(reCenter);
+    model.position.sub(reCenter);
+
     container.remove(placeholder);
-    // Apply satellite color tint to the model
+    // Emissive: set COLOR (grey) + intensity so model visible in Earth's shadow
     model.traverse(child => {
       if ((child as THREE.Mesh).isMesh) {
-        const mesh = child as THREE.Mesh;
-        const mat = mesh.material as THREE.MeshStandardMaterial;
+        const mat = (child as THREE.Mesh).material as THREE.MeshStandardMaterial;
         if (mat.isMeshStandardMaterial) {
-          mat.emissive = new THREE.Color(color);
-          mat.emissiveIntensity = 0.3;
+          if (!mat.emissive || mat.emissive.getHex() === 0x000000) {
+            mat.emissive = new THREE.Color(0x444444);
+          }
+          mat.emissiveIntensity = 0.4;
         }
       }
     });
@@ -83,16 +94,11 @@ export function createSatelliteModel(color: number, groupId?: string): THREE.Gro
   return container;
 }
 
-/**
- * Procedural fallback satellite (used while GLB loads or if load fails).
- */
 function createProceduralSatellite(color: number): THREE.Group {
   const satellite = new THREE.Group();
-
   const bodyGeometry = new THREE.BoxGeometry(0.006, 0.004, 0.004);
   const bodyMaterial = new THREE.MeshBasicMaterial({ color });
   satellite.add(new THREE.Mesh(bodyGeometry, bodyMaterial));
-
   const panelGeometry = new THREE.BoxGeometry(0.012, 0.0005, 0.006);
   const panelMaterial = new THREE.MeshBasicMaterial({ color: 0x2244aa });
   const leftPanel = new THREE.Mesh(panelGeometry, panelMaterial);
@@ -101,12 +107,14 @@ function createProceduralSatellite(color: number): THREE.Group {
   const rightPanel = new THREE.Mesh(panelGeometry, panelMaterial);
   rightPanel.position.set(0.009, 0, 0);
   satellite.add(rightPanel);
-
   const antennaGeometry = new THREE.ConeGeometry(0.002, 0.003, 8);
   const antennaMaterial = new THREE.MeshBasicMaterial({ color });
   const antenna = new THREE.Mesh(antennaGeometry, antennaMaterial);
   antenna.position.set(0, 0.002 + 0.003 / 2, 0);
   satellite.add(antenna);
-
+  // Center visual at origin (antenna causes y-offset)
+  const box = new THREE.Box3().setFromObject(satellite);
+  const center = new THREE.Vector3(); box.getCenter(center);
+  satellite.children.forEach(c => c.position.sub(center));
   return satellite;
 }

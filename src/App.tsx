@@ -84,7 +84,7 @@ export default function App() {
     const SPEED_SKIP_SATS = 86400;     // spd >= this: skip all satellite SGP4
     // SOLAR_SYSTEM_SCALE removed — use SUN_HIDE_PX for consistent galaxy-scale detection
     const KEPLER_ITERATIONS = 5;       // Newton's method iterations for Kepler eq
-    const FOCUS_MODEL_SCALE = 0.002;   // focused satellite model size (fraction of screen)
+    const FOCUS_MODEL_SCALE = 0.05;    // ~50px at focus distance (math: 0.002→2px, 0.05→50px)
     const SUN_HIDE_PX = 5;            // sun < this px: galaxy scale, hide solar system
     const TRAIL_LEN = 80;             // SGP4 sample points per trail
     // Tunable settings — exposed on window for UI sliders
@@ -840,8 +840,17 @@ export default function App() {
       if (focSatIdx >= 0 && focSatIdx !== idx) {
         const prev = satDataRef.current.meshes[focSatIdx];
         if (prev && prev.userData._focusActive) {
+          // Clean up neighbor groups
+          if (prev.userData._neighborGroups) {
+            (prev.userData._neighborGroups as THREE.Group[]).forEach(ng => { scene.remove(ng); });
+            delete prev.userData._neighborGroups;
+          }
+          satDataRef.current.meshes.forEach(m2 => { if (m2?.userData?._hiddenByNeighbor) { m2.visible = true; delete (m2.userData as any)._hiddenByNeighbor; } });
           const dg = prev.userData._detailGroup as THREE.Group | undefined;
-          if (dg) scene.remove(dg);
+          if (dg) {
+            scene.remove(dg);
+            dg.traverse(c => { const m = c as THREE.Mesh; if (m.geometry) m.geometry.dispose(); if (m.material) { const mats = Array.isArray(m.material) ? m.material : [m.material]; mats.forEach(mt => mt.dispose()); } });
+          }
           prev.visible = true;
           prev.scale.setScalar(prev.userData.baseScale);
           delete prev.userData._focusActive;
@@ -1332,7 +1341,8 @@ export default function App() {
         const el = bracketEls[i];
         if (!el) continue;
         const sm = sd.meshes[i];
-        if (!sm || !sm.visible || !showBrackets || !showHelpers || spd > SPEED_HIDE_UI) { el.style.display = 'none'; continue; }
+        const isFocused = (i === focSatIdx && sm?.userData?._focusActive);
+        if (!sm || (!sm.visible && !isFocused) || !showBrackets || !showHelpers || spd > SPEED_HIDE_UI) { el.style.display = 'none'; continue; }
 
         bracketVec.setFromMatrixPosition(sm.matrixWorld);
         if (isOccludedByPlanet(bracketVec)) { el.style.display = 'none'; continue; }
@@ -1341,6 +1351,19 @@ export default function App() {
 
         const x = (bracketVec.x * .5 + .5) * innerWidth;
         const y = (bracketVec.y * -.5 + .5) * innerHeight;
+
+        // Hide non-focused brackets that are screen-close to the focused satellite
+        if (!isFocused && focSatIdx >= 0) {
+          const focMesh = sd.meshes[focSatIdx];
+          if (focMesh) {
+            bracketVec.setFromMatrixPosition(focMesh.matrixWorld);
+            bracketVec.project(camera);
+            const fx = (bracketVec.x * .5 + .5) * innerWidth;
+            const fy = (bracketVec.y * -.5 + .5) * innerHeight;
+            const ddx = x - fx, ddy = y - fy;
+            if (ddx * ddx + ddy * ddy < 80 * 80) { el.style.display = 'none'; continue; } // within 80px
+          }
+        }
 
         el.style.display = 'block';
         const bs = cfg.bracketSize;
@@ -1754,6 +1777,19 @@ export default function App() {
             if (dot > 0.98 && camSatDist > camEarthDist) { sm.visible = false; continue; }
           }
           sm.visible = true;
+          // Jitter for stations: spread radially outward to prevent overlap
+          if (sat.groupId === GID_STATIONS) {
+            const seed = i * 7919;
+            const jitR = earthSceneR * sc * 0.08; // radial outward
+            const dxR = pos.x - ep.x, dyR = pos.y - ep.y, dzR = pos.z - ep.z;
+            const dR = Math.sqrt(dxR * dxR + dyR * dyR + dzR * dzR);
+            if (dR > 0.001) {
+              const factor = (Math.abs(Math.sin(seed)) * 0.8 + 0.2) * jitR;
+              pos.x += (dxR / dR) * factor;
+              pos.y += (dyR / dR) * factor;
+              pos.z += (dzR / dR) * factor;
+            }
+          }
           sm.position.set(pos.x, pos.y, pos.z);
 
           const isStation = sat.groupId === GID_STATIONS;
@@ -1784,9 +1820,22 @@ export default function App() {
                 const pastEci = getSatPositionECI(sat, trailDate);
                 if (pastEci) {
                   const pp = eciToScene(pastEci, ep, earthSceneR, sc);
-                  satTrails[i]![s * 3] = pp.x - ep.x;
-                  satTrails[i]![s * 3 + 1] = pp.y - ep.y;
-                  satTrails[i]![s * 3 + 2] = pp.z - ep.z;
+                  let trx = pp.x - ep.x, try2 = pp.y - ep.y, trz = pp.z - ep.z;
+                  // Apply same station jitter to trail points
+                  if (sat.groupId === GID_STATIONS) {
+                    const seed = i * 7919;
+                    const jitR = earthSceneR * sc * 0.08;
+                    const trd = Math.sqrt(trx * trx + try2 * try2 + trz * trz);
+                    if (trd > 0.001) {
+                      const factor = (Math.abs(Math.sin(seed)) * 0.8 + 0.2) * jitR;
+                      trx += (trx / trd) * factor;
+                      try2 += (try2 / trd) * factor;
+                      trz += (trz / trd) * factor;
+                    }
+                  }
+                  satTrails[i]![s * 3] = trx;
+                  satTrails[i]![s * 3 + 1] = try2;
+                  satTrails[i]![s * 3 + 2] = trz;
                 } else { allValid = false; }
               }
               satTrails[i]![lastIdx * 3] = pos.x - ep.x;
@@ -1920,7 +1969,9 @@ export default function App() {
         const fsm = satDataRef.current.meshes[focSatIdx];
         if (fsm) {
           tT.copy(fsm.position);
-          // First frame of focus: hide simple box, add detail Group at same position
+          fsm.visible = false; // EVERY frame: override position loop's visible=true
+          // debug removed
+          // First frame of focus: add detail Group at same position
           if (!fsm.userData._focusActive) {
             fsm.userData._focusActive = true;
             fsm.userData.baseScale = fsm.scale.x;
@@ -1933,22 +1984,66 @@ export default function App() {
             detailGroup.scale.copy(fsm.scale);
             scene.add(detailGroup);
             fsm.userData._detailGroup = detailGroup;
-            // Compute scale from detail model bounding sphere
+            // Compute bounding sphere at UNIT SCALE (same method as original e4c434f)
+            const savedDgScale = detailGroup.scale.x;
+            detailGroup.scale.setScalar(1);
             const bbox = new THREE.Box3().setFromObject(detailGroup);
             const bsph = new THREE.Sphere();
             bbox.getBoundingSphere(bsph);
-            fsm.userData.modelRadius = Math.max(bsph.radius, 0.015);
-            const targetWorldR = FOCUS_MODEL_SCALE * tD * Math.tan(25 * Math.PI / 180); // ~1/500 screen width
+            fsm.userData.modelRadius = Math.max(bsph.radius, 0.001);
+            detailGroup.scale.setScalar(savedDgScale);
+            const stationScale = fsm.userData.groupId === GID_STATIONS ? 0.2 : 1; // stations smaller to avoid cluster overlap
+            const targetWorldR = FOCUS_MODEL_SCALE * stationScale * tD * Math.tan(25 * Math.PI / 180);
             fsm.userData.focScale = targetWorldR / fsm.userData.modelRadius;
+          }
+          // Stations: show real models for nearby satellites too
+          if (fsm.userData.groupId === GID_STATIONS && !fsm.userData._neighborGroups) {
+            fsm.userData._neighborGroups = [] as THREE.Group[];
+            const NEIGHBOR_DIST = earthSceneR * baseScale(EARTH_IDX) * 0.15;
+            for (let ni = 0; ni < sd.sats.length; ni++) {
+              if (ni === focSatIdx) continue;
+              const ns = sd.sats[ni];
+              const nm2 = sd.meshes[ni];
+              if (!ns || !nm2 || ns.groupId !== GID_STATIONS) continue;
+              const dx = nm2.position.x - fsm.position.x;
+              const dy = nm2.position.y - fsm.position.y;
+              const dz = nm2.position.z - fsm.position.z;
+              if (dx*dx+dy*dy+dz*dz < NEIGHBOR_DIST*NEIGHBOR_DIST) {
+                const colN = typeof ns.color === 'string' ? parseInt(ns.color.replace('#',''),16) : ns.color;
+                const ng = createSatelliteModel(colN, ns.groupId);
+                ng.position.copy(nm2.position);
+                const neighborScale = fsm.userData.focScale * 0.15; // 15% of focused size
+                ng.scale.setScalar(Math.max(neighborScale, fsm.userData.baseScale));
+                scene.add(ng);
+                nm2.visible = false;
+                (fsm.userData._neighborGroups as THREE.Group[]).push(ng);
+                (nm2.userData as any)._hiddenByNeighbor = true;
+              }
+            }
+          }
+          // Update neighbor positions
+          if (fsm.userData._neighborGroups) {
+            let ni2 = 0;
+            for (let ni = 0; ni < sd.sats.length; ni++) {
+              if (ni === focSatIdx) continue;
+              const nm2 = sd.meshes[ni];
+              if (nm2?.userData?._hiddenByNeighbor && ni2 < (fsm.userData._neighborGroups as THREE.Group[]).length) {
+                const ng = (fsm.userData._neighborGroups as THREE.Group[])[ni2];
+                ng.position.copy(nm2.position);
+                nm2.visible = false;
+                ni2++;
+              }
+            }
           }
           // Update detail group position + scale each frame
           const dg = fsm.userData._detailGroup as THREE.Group | undefined;
           if (dg) {
             dg.position.copy(fsm.position);
             const initDist = fsm.userData.focInitDist || cD;
-            const blendStart = initDist * 2;
-            const blendEnd = initDist * 5;
-            const t2 = Math.min(Math.max((cD - blendStart) / (blendEnd - blendStart), 0), 1);
+            const blendStart = initDist * 1.2; // start shrinking sooner
+            const blendEnd = initDist * 3;     // fully shrunk at 3x (was 5x)
+            const t2raw = Math.min(Math.max((cD - blendStart) / (blendEnd - blendStart), 0), 1);
+            const t2 = t2raw * t2raw; // quadratic: fast initial shrink
             const currentScale = fsm.userData.focScale * (1 - t2) + fsm.userData.baseScale * t2;
             dg.scale.setScalar(Math.max(currentScale, fsm.userData.baseScale));
           }
@@ -1958,8 +2053,25 @@ export default function App() {
         const prevIdx = (window as any).__lastFocSat;
         const sm = satDataRef.current.meshes[prevIdx];
         if (sm && sm.userData._focusActive) {
+          // Clean up neighbor groups
+          if (sm.userData._neighborGroups) {
+            (sm.userData._neighborGroups as THREE.Group[]).forEach(ng => { scene.remove(ng); ng.traverse(c => { const m2 = c as THREE.Mesh; if (m2.geometry) m2.geometry.dispose(); if (m2.material) { const mts = Array.isArray(m2.material) ? m2.material : [m2.material]; mts.forEach(mt => mt.dispose()); } }); });
+            delete sm.userData._neighborGroups;
+          }
+          // Restore hidden neighbors
+          satDataRef.current.meshes.forEach(m2 => { if (m2?.userData?._hiddenByNeighbor) { m2.visible = true; delete (m2.userData as any)._hiddenByNeighbor; } });
           const dg = sm.userData._detailGroup as THREE.Group | undefined;
-          if (dg) scene.remove(dg);
+          if (dg) {
+            scene.remove(dg);
+            dg.traverse(c => {
+              const m = c as THREE.Mesh;
+              if (m.geometry) m.geometry.dispose();
+              if (m.material) {
+                const mats = Array.isArray(m.material) ? m.material : [m.material];
+                mats.forEach(mt => mt.dispose());
+              }
+            });
+          }
           sm.visible = true;
           sm.scale.setScalar(sm.userData.baseScale);
           delete sm.userData._focusActive;
