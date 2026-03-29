@@ -31,7 +31,7 @@ export default function App() {
   const iExtrasRef = useRef<HTMLDivElement>(null);
   const playBtnRef = useRef<HTMLButtonElement>(null);
   const spdTxtRef = useRef<HTMLDivElement>(null);
-  const tSliderRef = useRef<HTMLInputElement>(null);
+  // tSliderRef removed — speed dial replaced with +/- buttons
   const satCountRef = useRef<HTMLSpanElement>(null);
   const lSatRef = useRef<HTMLButtonElement>(null);
   // (lProbeRef removed — probe toggle is now in satellite panel)
@@ -54,7 +54,7 @@ export default function App() {
   (window as any).__openInfo = () => { closeAllPanels('info'); infoRef.current?.classList.add('open'); if (infoHintRef.current) infoHintRef.current.style.display = 'none'; };
   const [toast, setToast] = useState<{ title: string; text: string } | null>(null);
   const [satTab, setSatTab] = useState('beidou');
-  const [settingsTab, setSettingsTab] = useState('planets');
+  const [settingsTab, setSettingsTab] = useState('general');
   // infoHint is DOM-driven (not React state) to avoid full App re-renders on every planet click
   const [showStatus, setShowStatus] = useState(typeof window !== 'undefined' && window.innerWidth > 768);
   const [starlinkLoading, setStarlinkLoading] = useState(false);
@@ -1242,9 +1242,6 @@ export default function App() {
 
     function updSpd() {
       if (spdTxtRef.current) spdTxtRef.current.textContent = SPEED_PRESETS[spdIdx].label + '/秒';
-      const sliderPos = spdIdx / (SPEED_PRESETS.length - 1);
-      const thumb = (window as any).__spdThumb as HTMLDivElement | undefined;
-      if (thumb) thumb.style.left = `${sliderPos * 100}%`;
     }
     (window as any).__changeSpd = (dir: number) => {
       spdIdx = Math.max(0, Math.min(SPEED_PRESETS.length - 1, spdIdx + dir));
@@ -1257,11 +1254,6 @@ export default function App() {
         ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="5,3 19,12 5,21"/></svg>'
         : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="4" x2="6" y2="20"/><line x1="18" y1="4" x2="18" y2="20"/></svg>';
       playBtnRef.current!.classList.toggle('on', !paused);
-    };
-    (window as any).__spdSlider = (v: string) => {
-      spdIdx = Math.round(parseFloat(v) * (SPEED_PRESETS.length - 1));
-      spd = SPEED_PRESETS[spdIdx].v;
-      updSpd();
     };
     updSpd();
     (window as any).__resetCam = () => {
@@ -1554,6 +1546,10 @@ export default function App() {
     const simStartMs = Date.now();
     let animId: number;
     let frameCount = 0;
+    // Progressive trail recovery: when speed drops below threshold,
+    // restore trails one-by-one instead of all at once
+    let trailRecoveryIdx = -1; // -1 = not recovering, >= 0 = next sat index to restore
+    let trailsWereHidden = false; // track if trails were hidden by high speed
     function anim() {
       animId = requestAnimationFrame(anim);
       const now2 = performance.now(); const dt = Math.min((now2 - lastTime) / 1000, 0.1); lastTime = now2; // clamp to avoid spikes
@@ -1710,8 +1706,9 @@ export default function App() {
           const groupOn = sd.groups[sat?.groupId] ?? false;
           if (!groupOn || hideAllSats) {
             sm.visible = false;
-            if (satTrailLines[i]) { satTrailLines[i]!.visible = false; }
-            if (satTrails[i]) { satTrails[i]!.fill(0); satTrailReady[i] = false; }
+            if (satTrailLines[i]) satTrailLines[i]!.visible = false;
+            // Only zero trail data when GROUP is off (not when just zoomed out)
+            if (!groupOn && satTrails[i]) { satTrails[i]!.fill(0); satTrailReady[i] = false; }
             continue;
           }
 
@@ -1771,10 +1768,11 @@ export default function App() {
 
           // Trail: SGP4 past positions, 50% orbit (spd ≤ 30min/s)
           // Recompute frequency scales with speed: fast = more often (keeps trail smooth)
-          if (satTrails[i] && showTrails && spd <= SPEED_HIDE_TRAILS) {
+          // Trail: staggered SGP4 update
+          if (satTrails[i] && showTrails && spd <= SPEED_HIDE_TRAILS && !trailsWereHidden) {
             const trailStagger = spd < 60 ? 60 : spd < 300 ? 20 : 8;
             const lastIdx = TRAIL_LEN - 1;
-            if (!satTrailReady[i] || frameCount % trailStagger === (i % trailStagger)) {
+            if (frameCount % trailStagger === (i % trailStagger)) {
               const sr2 = sat.satrec as any;
               const periodSec = sr2.no ? (2 * Math.PI / sr2.no) * 60 : 5400;
               const trailDuration = periodSec * 0.5;
@@ -1794,31 +1792,71 @@ export default function App() {
               satTrails[i]![lastIdx * 3] = pos.x - ep.x;
               satTrails[i]![lastIdx * 3 + 1] = pos.y - ep.y;
               satTrails[i]![lastIdx * 3 + 2] = pos.z - ep.z;
-              if (allValid) {
-                satTrailReady[i] = true;
-              } else {
-                // Incomplete trail — zero out to prevent lines from Earth center
-                satTrails[i]!.fill(0);
-                satTrailReady[i] = false;
-              }
+              if (allValid) satTrailReady[i] = true;
+              else { satTrails[i]!.fill(0); satTrailReady[i] = false; }
             } else {
-              // Between recomputes: always update head point to track satellite
-              satTrails[i]![lastIdx * 3] = pos.x - ep.x;
-              satTrails[i]![lastIdx * 3 + 1] = pos.y - ep.y;
-              satTrails[i]![lastIdx * 3 + 2] = pos.z - ep.z;
+              satTrails[i]![(TRAIL_LEN - 1) * 3] = pos.x - ep.x;
+              satTrails[i]![(TRAIL_LEN - 1) * 3 + 1] = pos.y - ep.y;
+              satTrails[i]![(TRAIL_LEN - 1) * 3 + 2] = pos.z - ep.z;
             }
-            const line = satTrailLines[i];
-            if (line) {
-              line.visible = satTrailReady[i];
-              line.position.copy(ep);
-              line.geometry.attributes.position.needsUpdate = true;
-              line.geometry.setDrawRange(0, TRAIL_LEN);
-              const mat = line.material as THREE.ShaderMaterial;
-              if (mat.uniforms?.activePoints) mat.uniforms.activePoints.value = TRAIL_LEN;
-              if (mat.uniforms?.opacity) mat.uniforms.opacity.value = cfg.satTrailOpacity;
-            }
-          } else if (satTrailLines[i]) {
+            const line = satTrailLines[i]!;
+            line.visible = satTrailReady[i];
+            line.position.copy(ep);
+            line.geometry.attributes.position.needsUpdate = true;
+            line.geometry.setDrawRange(0, TRAIL_LEN);
+          } else if (satTrailLines[i] && spd > SPEED_HIDE_TRAILS) {
             satTrailLines[i]!.visible = false;
+          }
+        }
+
+        // ═══ Progressive trail recovery ═══
+        // When speed drops below threshold: restore trails ONE per frame (not all at once)
+        // When speed rises above threshold: abort recovery immediately
+        if (spd > SPEED_HIDE_TRAILS) {
+          // High speed: mark trails as needing recovery, abort any in-progress recovery
+          trailsWereHidden = true;
+          trailRecoveryIdx = -1;
+        } else if (trailsWereHidden && showTrails) {
+          // Speed just dropped: start progressive recovery from index 0
+          if (trailRecoveryIdx < 0) trailRecoveryIdx = 0;
+          // Recover ONE satellite's trail per frame
+          if (trailRecoveryIdx < sd.sats.length) {
+            const ri = trailRecoveryIdx;
+            const rSat = sd.sats[ri];
+            const rMesh = sd.meshes[ri];
+            if (rSat && rMesh?.visible && satTrails[ri] && satTrailLines[ri] && (sd.groups[rSat.groupId] ?? false)) {
+              const lastIdx = TRAIL_LEN - 1;
+              const sr2 = rSat.satrec as any;
+              const periodSec = sr2.no ? (2 * Math.PI / sr2.no) * 60 : 5400;
+              const trailDuration = periodSec * 0.5;
+              let allValid = true;
+              // Use REAL time for recovery (sim time may be years off after high speed)
+              const recoveryNowMs = Date.now();
+              const trailDate = new Date(recoveryNowMs);
+              for (let s = 0; s <= lastIdx; s++) {
+                trailDate.setTime(recoveryNowMs - (lastIdx - s) / lastIdx * trailDuration * 1000);
+                const pastEci = getSatPositionECI(rSat, trailDate);
+                if (pastEci) {
+                  const pp = eciToScene(pastEci, ep, earthSceneR, sc);
+                  satTrails[ri]![s * 3] = pp.x - ep.x;
+                  satTrails[ri]![s * 3 + 1] = pp.y - ep.y;
+                  satTrails[ri]![s * 3 + 2] = pp.z - ep.z;
+                } else { allValid = false; }
+              }
+              if (allValid) {
+                satTrailReady[ri] = true;
+                const line = satTrailLines[ri]!;
+                line.visible = true;
+                line.position.copy(ep);
+                line.geometry.attributes.position.needsUpdate = true;
+                line.geometry.setDrawRange(0, TRAIL_LEN);
+              }
+            }
+            trailRecoveryIdx++;
+          } else {
+            // Recovery complete
+            trailsWereHidden = false;
+            trailRecoveryIdx = -1;
           }
         }
 
@@ -1856,16 +1894,16 @@ export default function App() {
         }
       }
 
-      // Satellite orbit lines follow Earth position
-      // At speed > 30min/s: show satellite orbits instead of trails
+      // Satellite orbit lines: auto-show at high speed, auto-hide at low speed
       const showSatOrbitsAuto = spd > SPEED_HIDE_UI && !satSkip;
       if (showSatOrbitsAuto && sd.orbitLines.length === 0 && sd.sats.length > 0) {
-        computeSatOrbits(); // lazy compute on first need
+        computeSatOrbits();
       }
       if (sd.orbitLines.length > 0) {
         const ep2 = meshes[EARTH_IDX].position;
         sd.orbitLines.forEach(ol => {
-          ol.visible = showOrbits || showSatOrbitsAuto;
+          // Satellite orbits: only at high speed (auto). Hide at low speed.
+          ol.visible = showSatOrbitsAuto;
           // Position at Earth center. NO scale — positions already scaled in computeSatOrbits
           if (ol.visible) ol.position.copy(ep2);
           const olm = (ol as any).material;
@@ -2197,30 +2235,9 @@ export default function App() {
 
       <div className="timebar">
         <button className="tb on" ref={playBtnRef} onClick={() => (window as any).__togglePlay()}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="6" y1="4" x2="6" y2="20"/><line x1="18" y1="4" x2="18" y2="20"/></svg></button>
-        <div className="speed-dial" ref={tSliderRef} onPointerDown={e => {
-          e.preventDefault();
-          const el = e.currentTarget;
-          const rect = el.getBoundingClientRect();
-          const setFromX = (x: number) => {
-            const frac = Math.max(0, Math.min(1, (x - rect.left) / rect.width));
-            (window as any).__spdSlider(String(frac));
-          };
-          setFromX(e.clientX);
-          const onMove = (ev: PointerEvent) => { ev.preventDefault(); setFromX(ev.clientX); };
-          const onUp = () => { window.removeEventListener('pointermove', onMove); window.removeEventListener('pointerup', onUp); };
-          window.addEventListener('pointermove', onMove);
-          window.addEventListener('pointerup', onUp);
-        }}>
-          <div className="speed-dial-track">
-            {SPEED_PRESETS.map((_, i) => (
-              <div key={i} className="speed-dial-tick" style={{ left: `${(i / (SPEED_PRESETS.length - 1)) * 100}%`, height: i % 3 === 0 ? 10 : 6 }} />
-            ))}
-          </div>
-          <div className="speed-dial-thumb" ref={el => {
-            if (el) (window as any).__spdThumb = el;
-          }} />
-        </div>
-        <div className="tspeed" ref={spdTxtRef}>1分/秒</div>
+        <button className="tb" onClick={() => (window as any).__changeSpd(-1)}><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><line x1="5" y1="12" x2="19" y2="12"/></svg></button>
+        <div className="tspeed" ref={spdTxtRef} style={{ minWidth: 60, textAlign: 'center' }}>1分/秒</div>
+        <button className="tb" onClick={() => (window as any).__changeSpd(1)}><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></button>
         <button className="tb" onClick={() => (window as any).__resetCam()}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg></button>
       </div>
 
@@ -2421,9 +2438,9 @@ export default function App() {
             <div className="sat-sidebar">
               <div className="sat-col-title">设置</div>
               {[
+                { id: 'general', label: '通用' },
                 { id: 'planets', label: '行星系统' },
                 { id: 'sats', label: '人造卫星' },
-                { id: 'general', label: '通用' },
                 { id: 'audio', label: '音效' },
               ].map(t => (
                 <button key={t.id} className={`sat-tab ${settingsTab === t.id ? 'active' : ''}`} onClick={() => setSettingsTab(t.id)}>
