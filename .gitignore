@@ -3,3 +3,16 @@ dist
 .playwright-mcp
 .DS_Store
 screenshot-*.png
+
+# Large GLB models hosted on Supabase CDN (not in git)
+public/models/chandra.glb
+public/models/fermi.glb
+public/models/icesat2.glb
+public/models/tdrs-satellite.glb
+public/models/terra.glb
+public/models/suomi-npp.glb
+public/models/gpm.glb
+public/models/jwst.glb
+public/models/perseverance.glb
+public/models/juno.glb
+public/models/hubble.glb

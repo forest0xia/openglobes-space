@@ -2,7 +2,8 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 
-const BASE = import.meta.env.BASE_URL;
+const LOCAL_BASE = import.meta.env.BASE_URL;
+const CDN_BASE = 'https://esymcblyhmeuiudpmdff.supabase.co/storage/v1/object/public/og-space-3dmodels/';
 const loader = new GLTFLoader();
 const dracoLoader = new DRACOLoader();
 dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.7/');
@@ -10,6 +11,13 @@ loader.setDRACOLoader(dracoLoader);
 
 const modelCache = new Map<string, THREE.Group>();
 const loadPromises = new Map<string, Promise<THREE.Group>>();
+
+// Models >1MB hosted on Supabase CDN (GitHub Pages can't serve LFS files)
+const CDN_MODELS = new Set([
+  'chandra.glb', 'fermi.glb', 'icesat2.glb', 'tdrs-satellite.glb',
+  'terra.glb', 'suomi-npp.glb', 'gpm.glb', 'jwst.glb',
+  'perseverance.glb', 'juno.glb', 'hubble.glb',
+]);
 
 // Model assignments per satellite group
 const MODEL_MAP: Record<string, string> = {
@@ -28,7 +36,7 @@ const MODEL_MAP: Record<string, string> = {
  * Load a GLB, normalize to ~1 unit, cache, return clone.
  */
 function loadModel(filename: string): Promise<THREE.Group> {
-  const url = `${BASE}models/${filename}`;
+  const url = CDN_MODELS.has(filename) ? `${CDN_BASE}${filename}` : `${LOCAL_BASE}models/${filename}`;
   if (modelCache.has(url)) return Promise.resolve(modelCache.get(url)!.clone());
   if (loadPromises.has(url)) return loadPromises.get(url)!.then(g => g.clone());
   const p = new Promise<THREE.Group>((resolve) => {
