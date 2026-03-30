@@ -496,6 +496,49 @@ export default function App() {
       });
     };
 
+    // ═══ Slerp interpolation for smooth trail arcs ═══
+    // Between two ECI positions, emit ribbon segments along a spherical arc.
+    // This ensures smooth curves even when SGP4 samples are far apart at high speed.
+    const SLERP_MAX_SUB = 64; // max subdivisions per SGP4 gap
+    function emitTrailArc(
+      trail: SatTrail,
+      p0: { x: number; y: number; z: number },
+      p1: { x: number; y: number; z: number },
+      scale: number,
+    ): void {
+      const d0 = Math.sqrt(p0.x * p0.x + p0.y * p0.y + p0.z * p0.z);
+      const d1 = Math.sqrt(p1.x * p1.x + p1.y * p1.y + p1.z * p1.z);
+      if (d0 < 1 || d1 < 1) return;
+
+      const dot = (p0.x * p1.x + p0.y * p1.y + p0.z * p1.z) / (d0 * d1);
+      const theta = Math.acos(Math.max(-1, Math.min(1, dot)));
+
+      // No subdivision needed for small angles
+      if (theta < ANGLE_STEP * 1.5) {
+        trail.emit(
+          p1.x * scale, p1.y * scale, p1.z * scale,
+          p1.x - p0.x, p1.y - p0.y, p1.z - p0.z,
+        );
+        return;
+      }
+
+      const nSub = Math.min(Math.ceil(theta / ANGLE_STEP), SLERP_MAX_SUB);
+      const sinTheta = Math.sin(theta);
+      if (sinTheta < 1e-10) return; // degenerate (identical or antipodal)
+
+      let px = p0.x * scale, py = p0.y * scale, pz = p0.z * scale;
+      for (let j = 1; j <= nSub; j++) {
+        const t = j / nSub;
+        const w0 = Math.sin((1 - t) * theta) / sinTheta;
+        const w1 = Math.sin(t * theta) / sinTheta;
+        const ix = (p0.x * w0 + p1.x * w1) * scale;
+        const iy = (p0.y * w0 + p1.y * w1) * scale;
+        const iz = (p0.z * w0 + p1.z * w1) * scale;
+        trail.emit(ix, iy, iz, ix - px, iy - py, iz - pz);
+        px = ix; py = iy; pz = iz;
+      }
+    }
+
     function computeSatOrbits() {
       const sd = satDataRef.current;
       // Dispose old orbit lines first
@@ -590,7 +633,9 @@ export default function App() {
       const trail = new SatTrail(sat.color, sat.groupId === GID_STATIONS ? ribbonW * 3 : ribbonW);
       trailGroup.add(trail.mesh);
       satTrailObjects[i] = trail;
-      satPrevEci[i] = null; // will be set on first SGP4 position
+      // Seed prevEci so the very first emit cycle produces a trail point
+      const seedEci = getSatPositionECI(sat, new Date());
+      satPrevEci[i] = seedEci;
     }
 
     function dematerializeSat(i: number) {
@@ -1697,8 +1742,13 @@ export default function App() {
         trailGroup.rotation.y = -gmst + eRotY;
         trailGroup.scale.setScalar(sc);
 
-        // Trail emission stagger: spread SGP4 budget evenly across satellites
-        const emitInterval = Math.max(1, Math.ceil(sd.sats.length * MAX_EMIT_PER_SAT / SGP4_BUDGET_PER_FRAME));
+        // Trail emission stagger: budget-adaptive based on actual speed
+        // At low speed: each satellite emits ~1 SGP4 call → more sats per frame
+        // At high speed: each satellite emits up to MAX_EMIT_PER_SAT → fewer sats per frame
+        const typicalPeriod = 5400; // ~90min LEO reference
+        const frameAngle = Math.abs(dt * spd / typicalPeriod) * 2 * Math.PI;
+        const expectedEmitPerSat = Math.min(Math.max(1, Math.ceil(frameAngle / ANGLE_STEP)), MAX_EMIT_PER_SAT);
+        const emitInterval = Math.max(1, Math.ceil(sd.sats.length * expectedEmitPerSat / SGP4_BUDGET_PER_FRAME));
         const _trailSampleDate = new Date(now.getTime()); // reusable Date for trail emission (avoid per-sat allocation)
 
         // Hide all satellites + trails when Earth is too small on screen
@@ -1808,10 +1858,7 @@ export default function App() {
                 const sEci = getSatPositionECI(sat, _trailSampleDate);
                 if (!sEci) continue;
                 if (prev) {
-                  trail.emit(
-                    sEci.x * kmToScene, sEci.y * kmToScene, sEci.z * kmToScene,
-                    sEci.x - prev.x, sEci.y - prev.y, sEci.z - prev.z,
-                  );
+                  emitTrailArc(trail, prev, sEci, kmToScene);
                 }
                 prev = sEci;
               }
@@ -1858,16 +1905,11 @@ export default function App() {
         }
       }
 
-      // Satellite orbit lines: auto-show at high speed, auto-hide at low speed
-      const showSatOrbitsAuto = spd > SPEED_HIDE_UI;
-      if (showSatOrbitsAuto && sd.orbitLines.length === 0 && sd.sats.length > 0) {
-        computeSatOrbits();
-      }
+      // Satellite orbit lines: user-toggle only (ribbon trails now work at all speeds)
       if (sd.orbitLines.length > 0) {
         const ep2 = meshes[EARTH_IDX].position;
         sd.orbitLines.forEach(ol => {
-          // Satellite orbits: only at high speed (auto). Hide at low speed.
-          ol.visible = showSatOrbitsAuto;
+          ol.visible = false; // orbit lines disabled — ribbon trails replace them
           // Position at Earth center. NO scale — positions already scaled in computeSatOrbits
           if (ol.visible) ol.position.copy(ep2);
           const olm = (ol as any).material;
