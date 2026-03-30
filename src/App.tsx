@@ -79,15 +79,12 @@ export default function App() {
     const STATION_SCALE = 3;           // stations are this × bigger than regular sats
     const STARLINK_DOT_FACTOR = 0.002; // Starlink instance size relative to Earth
     const STARLINK_LIST_PREVIEW = 25;  // how many Starlink shown in sidebar list
-    const SPEED_HIDE_TRAILS = 1800;    // spd > this: hide trails, show orbit lines
     const SPEED_HIDE_UI = 1800;        // spd > this: hide sat labels/brackets
-    const SPEED_SKIP_SATS = 86400;     // spd >= this: skip all satellite SGP4
     // SOLAR_SYSTEM_SCALE removed — use SUN_HIDE_PX for consistent galaxy-scale detection
     const KEPLER_ITERATIONS = 5;       // Newton's method iterations for Kepler eq
     const FOCUS_MODEL_SCALE = 0.05;    // ~50px at focus distance (math: 0.002→2px, 0.05→50px)
     const FOCUS_OTHER_SAT_PX = 2;      // other satellites shrink to ~2px when one is focused
     const SUN_HIDE_PX = 5;            // sun < this px: galaxy scale, hide solar system
-    const TRAIL_LEN = 80;             // SGP4 sample points per trail
     // Tunable settings — exposed on window for UI sliders
     const cfg = (window as any).__cfg = {
       planetOrbitWidth: 1.5,   // px
@@ -649,40 +646,6 @@ export default function App() {
           const thisSize = isStation ? initBaseSatSize * STATION_SCALE : initBaseSatSize;
           sm.scale.setScalar(Math.max(thisSize, isStation ? initMinSatSize * 2 : initMinSatSize));
           sm.visible = true;
-        }
-      });
-
-      // Pre-compute initial trail positions for visible satellites
-      sats.forEach((sat, i) => {
-        if (!satTrails[i] || !satMeshes[i]?.visible) return;
-        const sr2 = sat.satrec as any;
-        const periodSec = sr2.no ? (2 * Math.PI / sr2.no) * 60 : 5400;
-        const trailDur = periodSec * 0.5;
-        const lastIdx = TRAIL_LEN - 1;
-        let allValid = true;
-        const nowMs = initNow.getTime();
-        const trailDate = new Date(nowMs);
-        for (let s = 0; s <= lastIdx; s++) {
-          trailDate.setTime(nowMs - (lastIdx - s) / lastIdx * trailDur * 1000);
-          const pastEci = getSatPositionECI(sat, trailDate);
-          if (pastEci) {
-            const pp = eciToScene(pastEci, ep0, earthSceneR, sc0, initNow, eRotY0);
-            satTrails[i]![s * 3] = pp.x - ep0.x;
-            satTrails[i]![s * 3 + 1] = pp.y - ep0.y;
-            satTrails[i]![s * 3 + 2] = pp.z - ep0.z;
-          } else { allValid = false; }
-        }
-        if (allValid) {
-          satTrailReady[i] = true;
-          const line = satTrailLines[i];
-          if (line) {
-            line.visible = true;
-            line.position.copy(ep0);
-            line.geometry.attributes.position.needsUpdate = true;
-            line.geometry.setDrawRange(0, TRAIL_LEN);
-            const mat = line.material as THREE.ShaderMaterial;
-            if (mat.uniforms?.activePoints) mat.uniforms.activePoints.value = TRAIL_LEN;
-          }
         }
       });
 
@@ -1273,10 +1236,9 @@ export default function App() {
       // Reset satellite state (clear stale SGP4 data + frozen flags)
       const sd = satDataRef.current;
       if (sd.starlinkPositions) sd.starlinkPositions.fill(0);
-      satTrailReady.fill(false);
+      satTrailObjects.forEach(tr => { if (tr) { tr.clear(); tr.mesh.visible = false; } });
+      satPrevEci.fill(null);
       satFrozen.fill(false);
-      satTrails.forEach(tr => { if (tr) tr.fill(0); });
-      satTrailLines.forEach(tl => { if (tl) { tl.visible = false; tl.geometry.setDrawRange(0, 0); } });
       (window as any).__closeInfo();
     };
     const layers = { sat: true, probe: false }; // probes hidden by default
@@ -1569,10 +1531,6 @@ export default function App() {
     let simStartMs = Date.now();
     let animId: number;
     let frameCount = 0;
-    // Progressive trail recovery: when speed drops below threshold,
-    // restore trails one-by-one instead of all at once
-    let trailRecoveryIdx = -1; // -1 = not recovering, >= 0 = next sat index to restore
-    let trailsWereHidden = false; // track if trails were hidden by high speed
     // Resync simulation clock when tab becomes visible (prevents drift from backgrounding)
     const onVisChange = () => {
       if (!document.hidden && spd <= 1) {
@@ -1719,9 +1677,8 @@ export default function App() {
 
       // ═══ Update satellite positions + trails ═══
       const sd = satDataRef.current;
-      const satSkip = spd >= SPEED_SKIP_SATS;
       const satInterval = spd < 300 ? 1 : spd < 3600 ? 3 : 10;
-      const satThisFrame = !satSkip && (frameCount % satInterval === 0);
+      const satThisFrame = frameCount % satInterval === 0;
 
       if (sd.meshes.length > 0) {
         const now = new Date(simStartMs + t * 1000);
@@ -1734,9 +1691,18 @@ export default function App() {
         const fovRad = (cam as THREE.PerspectiveCamera).fov * Math.PI / 180;
         const focTinySize = focSatIdx >= 0 ? FOCUS_OTHER_SAT_PX * cD * Math.tan(fovRad / 2) / innerHeight : 0;
 
-        // Hide all satellites + trails when Earth is too small on screen or speed too high
+        // Update trail group transform: ECI→scene via GMST + Earth rotation
+        const gmst = gstime(now);
+        trailGroup.position.copy(ep);
+        trailGroup.rotation.y = -gmst + eRotY;
+        trailGroup.scale.setScalar(sc);
+
+        // Trail emission stagger: spread SGP4 budget evenly across satellites
+        const emitInterval = Math.max(1, Math.ceil(sd.sats.length * MAX_EMIT_PER_SAT / SGP4_BUDGET_PER_FRAME));
+
+        // Hide all satellites + trails when Earth is too small on screen
         const earthScreenForSats = getScreenSize(meshes[eIdx], cam, earthSceneR * sc);
-        const hideAllSats = satSkip || earthScreenForSats < innerHeight / cfg.satBracketHideFrac;
+        const hideAllSats = earthScreenForSats < innerHeight / cfg.satBracketHideFrac;
 
         for (let i = 0; i < sd.sats.length; i++) {
           const sm = sd.meshes[i];
@@ -1745,16 +1711,17 @@ export default function App() {
           const groupOn = sd.groups[sat?.groupId] ?? false;
           if (!groupOn || hideAllSats) {
             sm.visible = false;
-            if (satTrailLines[i]) satTrailLines[i]!.visible = false;
-            // Only zero trail data when GROUP is off (not when just zoomed out)
-            if (!groupOn && satTrails[i]) { satTrails[i]!.fill(0); satTrailReady[i] = false; }
+            const tr = satTrailObjects[i];
+            if (tr) tr.mesh.visible = false;
+            if (!groupOn && tr) { tr.clear(); satPrevEci[i] = null; }
             continue;
           }
 
           // Frozen satellite: hidden (orbit drifted, position unreliable)
           if (satFrozen[i]) {
             sm.visible = false;
-            if (satTrailLines[i]) satTrailLines[i]!.visible = false;
+            const tr = satTrailObjects[i];
+            if (tr) tr.mesh.visible = false;
             continue;
           }
 
@@ -1772,7 +1739,8 @@ export default function App() {
           if (actualAltKm > expectedAlt * 1.5 || actualAltKm < expectedAlt / 1.5) {
             satFrozen[i] = true;
             sm.visible = false; // hide — position may be wrong
-            if (satTrailLines[i]) satTrailLines[i]!.visible = false;
+            const tr = satTrailObjects[i];
+            if (tr) tr.mesh.visible = false;
             continue;
           }
 
@@ -1819,113 +1787,40 @@ export default function App() {
             sm.scale.setScalar(Math.max(thisSize, isStation ? minSatSize * 2 : minSatSize));
           }
 
-          // Visibility is governed by hideAllSats (Earth screen size < 1/100)
-          // No per-satellite screen-size check — satellites are always tiny but shown when Earth is visible
-
-          // Trail: SGP4 past positions, 50% orbit (spd ≤ 30min/s)
-          // Recompute frequency scales with speed: fast = more often (keeps trail smooth)
-          // Trail: staggered SGP4 update
-          if (satTrails[i] && showTrails && spd <= SPEED_HIDE_TRAILS && !trailsWereHidden) {
-            const trailStagger = spd < 60 ? 60 : spd < 300 ? 20 : 8;
-            const lastIdx = TRAIL_LEN - 1;
-            if (frameCount % trailStagger === (i % trailStagger)) {
+          // ═══ Trail emission (append-only, angular-density) ═══
+          const trail = satTrailObjects[i];
+          if (trail && showTrails) {
+            if (frameCount % emitInterval === (i % emitInterval)) {
               const sr2 = sat.satrec as any;
               const periodSec = sr2.no ? (2 * Math.PI / sr2.no) * 60 : 5400;
-              const trailDuration = periodSec * 0.5;
-              let allValid = true;
-              const nowMs = now.getTime();
-              const trailDate = new Date(nowMs);
-              for (let s = 0; s <= lastIdx; s++) {
-                trailDate.setTime(nowMs - (lastIdx - s) / lastIdx * trailDuration * 1000);
-                const pastEci = getSatPositionECI(sat, trailDate);
-                if (pastEci) {
-                  const pp = eciToScene(pastEci, ep, earthSceneR, sc, now, eRotY);
-                  let trx = pp.x - ep.x, try2 = pp.y - ep.y, trz = pp.z - ep.z;
-                  // Apply same station jitter to trail points
-                  if (sat.groupId === GID_STATIONS) {
-                    const seed = i * 7919;
-                    const jitR = earthSceneR * sc * 0.08;
-                    const trd = Math.sqrt(trx * trx + try2 * try2 + trz * trz);
-                    if (trd > 0.001) {
-                      const factor = (Math.abs(Math.sin(seed)) * 0.8 + 0.2) * jitR;
-                      trx += (trx / trd) * factor;
-                      try2 += (try2 / trd) * factor;
-                      trz += (trz / trd) * factor;
-                    }
-                  }
-                  satTrails[i]![s * 3] = trx;
-                  satTrails[i]![s * 3 + 1] = try2;
-                  satTrails[i]![s * 3 + 2] = trz;
-                } else { allValid = false; }
-              }
-              satTrails[i]![lastIdx * 3] = pos.x - ep.x;
-              satTrails[i]![lastIdx * 3 + 1] = pos.y - ep.y;
-              satTrails[i]![lastIdx * 3 + 2] = pos.z - ep.z;
-              if (allValid) satTrailReady[i] = true;
-              else { satTrails[i]!.fill(0); satTrailReady[i] = false; }
-            } else {
-              satTrails[i]![(TRAIL_LEN - 1) * 3] = pos.x - ep.x;
-              satTrails[i]![(TRAIL_LEN - 1) * 3 + 1] = pos.y - ep.y;
-              satTrails[i]![(TRAIL_LEN - 1) * 3 + 2] = pos.z - ep.z;
-            }
-            const line = satTrailLines[i]!;
-            line.visible = satTrailReady[i];
-            line.position.copy(ep);
-            line.geometry.attributes.position.needsUpdate = true;
-            line.geometry.setDrawRange(0, TRAIL_LEN);
-          } else if (satTrailLines[i] && spd > SPEED_HIDE_TRAILS) {
-            satTrailLines[i]!.visible = false;
-          }
-        }
+              const dtSim = dt * spd * emitInterval;
+              const angleSwept = (dtSim / periodSec) * 2 * Math.PI;
+              let nEmit = Math.ceil(Math.abs(angleSwept) / ANGLE_STEP);
+              nEmit = Math.max(1, Math.min(nEmit, MAX_EMIT_PER_SAT));
 
-        // ═══ Progressive trail recovery ═══
-        // When speed drops below threshold: restore trails ONE per frame (not all at once)
-        // When speed rises above threshold: abort recovery immediately
-        if (spd > SPEED_HIDE_TRAILS) {
-          // High speed: mark trails as needing recovery, abort any in-progress recovery
-          trailsWereHidden = true;
-          trailRecoveryIdx = -1;
-        } else if (trailsWereHidden && showTrails) {
-          // Speed just dropped: start progressive recovery from index 0
-          if (trailRecoveryIdx < 0) trailRecoveryIdx = 0;
-          // Recover ONE satellite's trail per frame
-          if (trailRecoveryIdx < sd.sats.length) {
-            const ri = trailRecoveryIdx;
-            const rSat = sd.sats[ri];
-            const rMesh = sd.meshes[ri];
-            if (rSat && rMesh?.visible && satTrails[ri] && satTrailLines[ri] && (sd.groups[rSat.groupId] ?? false)) {
-              const lastIdx = TRAIL_LEN - 1;
-              const sr2 = rSat.satrec as any;
-              const periodSec = sr2.no ? (2 * Math.PI / sr2.no) * 60 : 5400;
-              const trailDuration = periodSec * 0.5;
-              let allValid = true;
-              // Use simulation time (consistent with satellite positions)
-              const recoveryNowMs = now.getTime();
-              const trailDate = new Date(recoveryNowMs);
-              for (let s = 0; s <= lastIdx; s++) {
-                trailDate.setTime(recoveryNowMs - (lastIdx - s) / lastIdx * trailDuration * 1000);
-                const pastEci = getSatPositionECI(rSat, trailDate);
-                if (pastEci) {
-                  const pp = eciToScene(pastEci, ep, earthSceneR, sc, now, eRotY);
-                  satTrails[ri]![s * 3] = pp.x - ep.x;
-                  satTrails[ri]![s * 3 + 1] = pp.y - ep.y;
-                  satTrails[ri]![s * 3 + 2] = pp.z - ep.z;
-                } else { allValid = false; }
+              const subDt = dtSim / nEmit;
+              const nowMs = now.getTime();
+              const sampleDate = new Date(nowMs);
+              let prev = satPrevEci[i];
+
+              for (let k = 1; k <= nEmit; k++) {
+                sampleDate.setTime(nowMs - dtSim * 1000 + k * subDt * 1000);
+                const sEci = getSatPositionECI(sat, sampleDate);
+                if (!sEci) continue;
+                if (prev) {
+                  trail.emit(
+                    sEci.x * kmToScene, sEci.y * kmToScene, sEci.z * kmToScene,
+                    sEci.x - prev.x, sEci.y - prev.y, sEci.z - prev.z,
+                  );
+                }
+                prev = sEci;
               }
-              if (allValid) {
-                satTrailReady[ri] = true;
-                const line = satTrailLines[ri]!;
-                line.visible = true;
-                line.position.copy(ep);
-                line.geometry.attributes.position.needsUpdate = true;
-                line.geometry.setDrawRange(0, TRAIL_LEN);
-              }
+              satPrevEci[i] = prev;
             }
-            trailRecoveryIdx++;
-          } else {
-            // Recovery complete
-            trailsWereHidden = false;
-            trailRecoveryIdx = -1;
+            trail.mesh.visible = trail.n > 1;
+            trail.update();
+          } else if (trail) {
+            trail.mesh.visible = false;
           }
         }
 
@@ -1964,7 +1859,7 @@ export default function App() {
       }
 
       // Satellite orbit lines: auto-show at high speed, auto-hide at low speed
-      const showSatOrbitsAuto = spd > SPEED_HIDE_UI && !satSkip;
+      const showSatOrbitsAuto = spd > SPEED_HIDE_UI;
       if (showSatOrbitsAuto && sd.orbitLines.length === 0 && sd.sats.length > 0) {
         computeSatOrbits();
       }
