@@ -673,7 +673,7 @@ export default function App() {
           trailDate.setTime(nowMs - (lastIdx - s) / lastIdx * trailDur * 1000);
           const pastEci = getSatPositionECI(sat, trailDate);
           if (pastEci) {
-            const pp = eciToScene(pastEci, ep0, earthSceneR, sc0, trailDate, eRotY0);
+            const pp = eciToScene(pastEci, ep0, earthSceneR, sc0, initNow, eRotY0);
             satTrails[i]![s * 3] = pp.x - ep0.x;
             satTrails[i]![s * 3 + 1] = pp.y - ep0.y;
             satTrails[i]![s * 3 + 2] = pp.z - ep0.z;
@@ -1846,7 +1846,7 @@ export default function App() {
                 trailDate.setTime(nowMs - (lastIdx - s) / lastIdx * trailDuration * 1000);
                 const pastEci = getSatPositionECI(sat, trailDate);
                 if (pastEci) {
-                  const pp = eciToScene(pastEci, ep, earthSceneR, sc, trailDate, eRotY);
+                  const pp = eciToScene(pastEci, ep, earthSceneR, sc, now, eRotY);
                   let trx = pp.x - ep.x, try2 = pp.y - ep.y, trz = pp.z - ep.z;
                   // Apply same station jitter to trail points
                   if (sat.groupId === GID_STATIONS) {
@@ -1913,7 +1913,7 @@ export default function App() {
                 trailDate.setTime(recoveryNowMs - (lastIdx - s) / lastIdx * trailDuration * 1000);
                 const pastEci = getSatPositionECI(rSat, trailDate);
                 if (pastEci) {
-                  const pp = eciToScene(pastEci, ep, earthSceneR, sc, trailDate, eRotY);
+                  const pp = eciToScene(pastEci, ep, earthSceneR, sc, now, eRotY);
                   satTrails[ri]![s * 3] = pp.x - ep.x;
                   satTrails[ri]![s * 3 + 1] = pp.y - ep.y;
                   satTrails[ri]![s * 3 + 2] = pp.z - ep.z;
