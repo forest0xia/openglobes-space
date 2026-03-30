@@ -6,6 +6,7 @@
 import {
   twoline2satrec,
   propagate,
+  gstime,
   type SatRec,
   type EciVec3,
 } from 'satellite.js';
@@ -255,16 +256,41 @@ export function getSatPositionECI(sat: SatRecord, date: Date): { x: number; y: n
   } catch { return null; }
 }
 
+/**
+ * Convert ECI (Earth-Centered Inertial) to scene coordinates.
+ * Applies GMST rotation (ECI → ECEF) so satellites track Earth's surface correctly.
+ * Without this, geostationary satellites would appear to drift.
+ *
+ * @param date - simulation Date used to compute GMST sidereal angle
+ * @param earthRotY - Earth mesh's current rotation.y (scene visual rotation)
+ */
 export function eciToScene(
   eci: { x: number; y: number; z: number },
   earthPos: { x: number; y: number; z: number },
   earthSceneR: number,
-  scaleFactor: number = 1
+  scaleFactor: number = 1,
+  date?: Date,
+  earthRotY: number = 0,
 ): { x: number; y: number; z: number } {
   const kmToScene = earthSceneR / 6371;
+  let ex = eci.x, ey = eci.y, ez = eci.z;
+  // Rotate ECI → ECEF by GMST, then rotate into scene frame by Earth mesh rotation
+  if (date) {
+    const gmstAngle = gstime(date);
+    // ECI → ECEF: rotate around Y (pole) by -GMST
+    const cosG = Math.cos(-gmstAngle), sinG = Math.sin(-gmstAngle);
+    const rx = ex * cosG - ez * sinG;
+    const rz = ex * sinG + ez * cosG;
+    ex = rx; ez = rz;
+    // ECEF → scene: rotate by Earth's visual rotation.y
+    const cosR = Math.cos(earthRotY), sinR = Math.sin(earthRotY);
+    const sx = ex * cosR - ez * sinR;
+    const sz = ex * sinR + ez * cosR;
+    ex = sx; ez = sz;
+  }
   return {
-    x: earthPos.x + eci.x * kmToScene * scaleFactor,
-    y: earthPos.y + eci.y * kmToScene * scaleFactor,
-    z: earthPos.z + eci.z * kmToScene * scaleFactor,
+    x: earthPos.x + ex * kmToScene * scaleFactor,
+    y: earthPos.y + ey * kmToScene * scaleFactor,
+    z: earthPos.z + ez * kmToScene * scaleFactor,
   };
 }

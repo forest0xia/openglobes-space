@@ -125,6 +125,7 @@ export default function App() {
     scene.add(new THREE.AmbientLight(0x405060, .6));
     // Sun point light — no decay, so ALL planets get full daylight on the sun-facing side
     const sunL = new THREE.PointLight(0xFFF5E0, 4.0, 0, 0); scene.add(sunL);
+
     // Camera fill light — lights planet from all angles when zoomed in, fades when zoomed out
     const camLight = new THREE.PointLight(0xFFFFFF, 0, 0, 0);
     cam.add(camLight);
@@ -640,6 +641,7 @@ export default function App() {
       const eIdx0 = EARTH_IDX;
       const ep0 = meshes[eIdx0].position;
       const sc0 = baseScale(eIdx0);
+      const eRotY0 = meshes[eIdx0].rotation.y;
       const initBaseSatSize = sc0 * earthSceneR * SAT_SIZE_FACTOR;
       const initMinSatSize = earthSceneR * sc0 * SAT_MIN_SIZE_FACTOR;
       sats.forEach((sat, i) => {
@@ -647,7 +649,7 @@ export default function App() {
         if (!sm) return;
         const eci = getSatPositionECI(sat, initNow);
         if (eci && isFinite(eci.x) && isFinite(eci.y) && isFinite(eci.z)) {
-          const pos = eciToScene(eci, ep0, earthSceneR, sc0);
+          const pos = eciToScene(eci, ep0, earthSceneR, sc0, initNow, eRotY0);
           sm.position.set(pos.x, pos.y, pos.z);
           // Set correct scale immediately (same logic as animation loop)
           const isStation = sat.groupId === GID_STATIONS;
@@ -671,7 +673,7 @@ export default function App() {
           trailDate.setTime(nowMs - (lastIdx - s) / lastIdx * trailDur * 1000);
           const pastEci = getSatPositionECI(sat, trailDate);
           if (pastEci) {
-            const pp = eciToScene(pastEci, ep0, earthSceneR, sc0);
+            const pp = eciToScene(pastEci, ep0, earthSceneR, sc0, trailDate, eRotY0);
             satTrails[i]![s * 3] = pp.x - ep0.x;
             satTrails[i]![s * 3 + 1] = pp.y - ep0.y;
             satTrails[i]![s * 3 + 2] = pp.z - ep0.z;
@@ -750,7 +752,7 @@ export default function App() {
         for (let si = 0; si < slCount; si++) {
           const slEci = getSatPositionECI(newSats[si], initNow);
           if (slEci && isFinite(slEci.x) && isFinite(slEci.y) && isFinite(slEci.z)) {
-            const slP = eciToScene(slEci, epSL, earthSceneR, scSL);
+            const slP = eciToScene(slEci, epSL, earthSceneR, scSL, initNow, meshes[eIdxSL].rotation.y);
             const rx = slP.x - epSL.x, ry = slP.y - epSL.y, rz = slP.z - epSL.z;
             slPositions[si * 3] = rx;
             slPositions[si * 3 + 1] = ry;
@@ -1244,7 +1246,7 @@ export default function App() {
     // Speed presets: each value = how many real seconds per animation second
     // 1 = real-time, 86400 = 1 day/s, 2592000 = 1 month/s, etc.
     // SPEED_PRESETS is defined at module level
-    let spdIdx = 3; // default: 1分/秒 (index 3 after adding 15秒/30秒)
+    let spdIdx = 0; // default: real-time (1秒/秒)
     let spd = SPEED_PRESETS[spdIdx].v;
     let paused = false;
     // Earth orbital rate: 2π / 31557600 rad/s at real-time
@@ -1267,20 +1269,19 @@ export default function App() {
     };
     updSpd();
     (window as any).__resetCam = () => {
-      tA = { t: 0.3, p: Math.PI / 3 }; tD = 105; tT.set(0, 0, 0);
-      focIdx = -1; focSatIdx = -1; focMoonMesh = null;
-      // Reset speed and simulated time to now
-      spdIdx = 3; spd = SPEED_PRESETS[spdIdx].v; updSpd();
-      t = 0; lastTime = performance.now(); // reset sim clock to real time
+      // "Live" reset: resync to real-time NOW, focus on Earth, keep speed unchanged
+      focusObj(EARTH_IDX);
+      tA = { t: 0.3, p: Math.PI / 3 }; // default viewing angle
+      // Resync simulation clock to wall clock (back to "live")
+      simStartMs = Date.now(); t = 0; lastTime = performance.now();
       paused = false;
       if (playBtnRef.current) playBtnRef.current.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="4" x2="6" y2="20"/><line x1="18" y1="4" x2="18" y2="20"/></svg>';
       if (playBtnRef.current) playBtnRef.current.classList.add('on');
-      // Reset all satellite positions (clear stale SGP4 data + frozen flags)
+      // Reset satellite state (clear stale SGP4 data + frozen flags)
       const sd = satDataRef.current;
       if (sd.starlinkPositions) sd.starlinkPositions.fill(0);
       satTrailReady.fill(false);
       satFrozen.fill(false);
-      satTrailReady.fill(false);
       satTrails.forEach(tr => { if (tr) tr.fill(0); });
       satTrailLines.forEach(tl => { if (tl) { tl.visible = false; tl.geometry.setDrawRange(0, 0); } });
       (window as any).__closeInfo();
@@ -1572,13 +1573,25 @@ export default function App() {
     const _slTmpMat = new THREE.Matrix4();
     // t = elapsed accelerated seconds. simStartMs = real timestamp at t=0.
     let t = 0; let lastTime = performance.now();
-    const simStartMs = Date.now();
+    let simStartMs = Date.now();
     let animId: number;
     let frameCount = 0;
     // Progressive trail recovery: when speed drops below threshold,
     // restore trails one-by-one instead of all at once
     let trailRecoveryIdx = -1; // -1 = not recovering, >= 0 = next sat index to restore
     let trailsWereHidden = false; // track if trails were hidden by high speed
+    // Resync simulation clock when tab becomes visible (prevents drift from backgrounding)
+    const onVisChange = () => {
+      if (!document.hidden && spd <= 1) {
+        // At real-time speed, resync perfectly to wall clock
+        simStartMs = Date.now(); t = 0; lastTime = performance.now();
+      } else if (!document.hidden) {
+        // At higher speeds, just fix the frame delta spike
+        lastTime = performance.now();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisChange);
+
     function anim() {
       animId = requestAnimationFrame(anim);
       const now2 = performance.now(); const dt = Math.min((now2 - lastTime) / 1000, 0.1); lastTime = now2; // clamp to avoid spikes
@@ -1722,6 +1735,7 @@ export default function App() {
         const eIdx = EARTH_IDX;
         const ep = meshes[eIdx].position;
         const sc = baseScale(eIdx);
+        const eRotY = meshes[eIdx].rotation.y; // Earth's visual rotation for GMST→scene
         const baseSatSize = sc * earthSceneR * SAT_SIZE_FACTOR;
         // When a satellite is focused, shrink all other boxes to ~2px
         const fovRad = (cam as THREE.PerspectiveCamera).fov * Math.PI / 180;
@@ -1769,7 +1783,7 @@ export default function App() {
             continue;
           }
 
-          const pos = eciToScene(eci, ep, earthSceneR, sc);
+          const pos = eciToScene(eci, ep, earthSceneR, sc, now, eRotY);
           // Sanity: if position is at origin or too far, hide
           const dxE = pos.x - ep.x, dyE = pos.y - ep.y, dzE = pos.z - ep.z;
           const distFromEarth = Math.sqrt(dxE * dxE + dyE * dyE + dzE * dzE);
@@ -1832,7 +1846,7 @@ export default function App() {
                 trailDate.setTime(nowMs - (lastIdx - s) / lastIdx * trailDuration * 1000);
                 const pastEci = getSatPositionECI(sat, trailDate);
                 if (pastEci) {
-                  const pp = eciToScene(pastEci, ep, earthSceneR, sc);
+                  const pp = eciToScene(pastEci, ep, earthSceneR, sc, trailDate, eRotY);
                   let trx = pp.x - ep.x, try2 = pp.y - ep.y, trz = pp.z - ep.z;
                   // Apply same station jitter to trail points
                   if (sat.groupId === GID_STATIONS) {
@@ -1892,14 +1906,14 @@ export default function App() {
               const periodSec = sr2.no ? (2 * Math.PI / sr2.no) * 60 : 5400;
               const trailDuration = periodSec * 0.5;
               let allValid = true;
-              // Use REAL time for recovery (sim time may be years off after high speed)
-              const recoveryNowMs = Date.now();
+              // Use simulation time (consistent with satellite positions)
+              const recoveryNowMs = now.getTime();
               const trailDate = new Date(recoveryNowMs);
               for (let s = 0; s <= lastIdx; s++) {
                 trailDate.setTime(recoveryNowMs - (lastIdx - s) / lastIdx * trailDuration * 1000);
                 const pastEci = getSatPositionECI(rSat, trailDate);
                 if (pastEci) {
-                  const pp = eciToScene(pastEci, ep, earthSceneR, sc);
+                  const pp = eciToScene(pastEci, ep, earthSceneR, sc, trailDate, eRotY);
                   satTrails[ri]![s * 3] = pp.x - ep.x;
                   satTrails[ri]![s * 3 + 1] = pp.y - ep.y;
                   satTrails[ri]![s * 3 + 2] = pp.z - ep.z;
@@ -1941,7 +1955,7 @@ export default function App() {
           for (let si = slStart; si < slEnd; si++) {
             const slEci = getSatPositionECI(slSats[si], now);
             if (slEci && isFinite(slEci.x)) {
-              const slP = eciToScene(slEci, ep, earthSceneR, sc);
+              const slP = eciToScene(slEci, ep, earthSceneR, sc, now, eRotY);
               const rx = slP.x - ep.x, ry = slP.y - ep.y, rz = slP.z - ep.z;
               slPos[si * 3] = rx; slPos[si * 3 + 1] = ry; slPos[si * 3 + 2] = rz;
               _slTmpMat.makeTranslation(rx, ry, rz);
@@ -2127,19 +2141,28 @@ export default function App() {
       cam.position.set(cT.x + cD * Math.sin(cA.p) * Math.cos(cA.t), cT.y + cD * Math.cos(cA.p), cT.z + cD * Math.sin(cA.p) * Math.sin(cA.t));
       cam.lookAt(cT);
 
-      // Update atmosphere uniforms — only for VISIBLE glow meshes (LOD already hid far ones)
+      // Update atmosphere uniforms — re-evaluate visibility every frame
       const glowSunPos = meshes[0].position;
       glowMeshes.forEach(gm => {
-        if (!gm.visible) return; // LOD already set visibility, skip hidden ones entirely
         const parent = gm.parent;
         if (!parent || !parent.visible) { gm.visible = false; return; }
-        const mat = gm.userData.glowMat as THREE.ShaderMaterial;
-        mat.uniforms.sunPos.value.copy(glowSunPos);
-        mat.uniforms.camPos.value.copy(cam.position);
+        // Check LOD: non-Earth planets hide glow when small on screen
+        if ((gm as any).userData?.isGlow) {
+          const pIdx = meshes.indexOf(parent as THREE.Mesh);
+          if (pIdx >= 0 && pIdx !== EARTH_IDX) {
+            const pScreenPx = getScreenSize(parent as THREE.Mesh, cam, planetVisR[pIdx]);
+            if (pScreenPx < innerHeight / 20) { gm.visible = false; return; }
+          }
+        }
         // Hide if camera is inside the glow sphere
         const glowWorldR = gm.scale.x * (parent.scale?.x || 1);
         const distToParent = cam.position.distanceTo(parent.position);
-        if (distToParent <= glowWorldR) gm.visible = false;
+        if (distToParent <= glowWorldR) { gm.visible = false; return; }
+        // Visible — update uniforms
+        gm.visible = true;
+        const mat = gm.userData.glowMat as THREE.ShaderMaterial;
+        mat.uniforms.sunPos.value.copy(glowSunPos);
+        mat.uniforms.camPos.value.copy(cam.position);
       });
 
       // Dynamic near/far plane
@@ -2200,6 +2223,8 @@ export default function App() {
         dsMat.opacity = 0;
       }
 
+
+
       ren.render(scene, cam);
       updateHelpers();
     }
@@ -2246,6 +2271,7 @@ export default function App() {
 
     return () => {
       cancelAnimationFrame(animId);
+      document.removeEventListener('visibilitychange', onVisChange);
       window.removeEventListener('resize', onResize);
       // Dispose all satellite resources
       for (let i = 0; i < satMeshes.length; i++) dematerializeSat(i);
