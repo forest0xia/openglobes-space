@@ -1699,6 +1699,7 @@ export default function App() {
 
         // Trail emission stagger: spread SGP4 budget evenly across satellites
         const emitInterval = Math.max(1, Math.ceil(sd.sats.length * MAX_EMIT_PER_SAT / SGP4_BUDGET_PER_FRAME));
+        const _trailSampleDate = new Date(now.getTime()); // reusable Date for trail emission (avoid per-sat allocation)
 
         // Hide all satellites + trails when Earth is too small on screen
         const earthScreenForSats = getScreenSize(meshes[eIdx], cam, earthSceneR * sc);
@@ -1800,12 +1801,11 @@ export default function App() {
 
               const subDt = dtSim / nEmit;
               const nowMs = now.getTime();
-              const sampleDate = new Date(nowMs);
               let prev = satPrevEci[i];
 
               for (let k = 1; k <= nEmit; k++) {
-                sampleDate.setTime(nowMs - dtSim * 1000 + k * subDt * 1000);
-                const sEci = getSatPositionECI(sat, sampleDate);
+                _trailSampleDate.setTime(nowMs - dtSim * 1000 + k * subDt * 1000);
+                const sEci = getSatPositionECI(sat, _trailSampleDate);
                 if (!sEci) continue;
                 if (prev) {
                   trail.emit(
@@ -1818,7 +1818,7 @@ export default function App() {
               satPrevEci[i] = prev;
             }
             trail.mesh.visible = trail.n > 1;
-            trail.update();
+            trail.update(cfg.satTrailOpacity);
           } else if (trail) {
             trail.mesh.visible = false;
           }

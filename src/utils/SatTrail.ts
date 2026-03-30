@@ -33,11 +33,12 @@ const vertexShader = /* glsl */ `
 
 const fragmentShader = /* glsl */ `
   uniform vec3 uColor;
+  uniform float uOpacity;
   varying float vFade;
   void main() {
     float f = vFade * vFade;
     if (f < 0.003) discard;
-    gl_FragColor = vec4(uColor * (0.35 + 0.85 * f), f * 0.75);
+    gl_FragColor = vec4(uColor * (0.35 + 0.85 * f), f * 0.75 * uOpacity);
   }
 `;
 
@@ -78,6 +79,7 @@ export class SatTrail {
         uColor: { value: new THREE.Vector3(c.r, c.g, c.b) },
         uNow: { value: 0 },
         uLife: { value: TRAIL_LIFE },
+        uOpacity: { value: 1.0 },
       },
       vertexShader,
       fragmentShader,
@@ -141,9 +143,10 @@ export class SatTrail {
   }
 
   /** Call each frame to advance shader time and draw range. */
-  update(): void {
+  update(opacity?: number): void {
     const mat = this.mesh.material as THREE.ShaderMaterial;
     mat.uniforms.uNow.value = this.tick;
+    if (opacity !== undefined) mat.uniforms.uOpacity.value = opacity;
     this.geo.setDrawRange(0, Math.max(0, this.n - 1) * 6);
   }
 
