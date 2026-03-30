@@ -629,7 +629,8 @@ export default function App() {
       scene.add(sm);
       satMeshes[i] = sm;
       // Per-satellite ribbon trail (append-only, birth-based fade)
-      const ribbonW = kmToScene * 20; // ~20km ribbon width in ECI-scaled space
+      // Width in ECI-stored coords; rendered width = ribbonW × trailGroup.scale (~2-3px at default zoom)
+      const ribbonW = kmToScene * 120;
       const trail = new SatTrail(sat.color, sat.groupId === GID_STATIONS ? ribbonW * 3 : ribbonW);
       trailGroup.add(trail.mesh);
       satTrailObjects[i] = trail;
@@ -1757,91 +1758,16 @@ export default function App() {
 
         for (let i = 0; i < sd.sats.length; i++) {
           const sm = sd.meshes[i];
-          if (!sm) continue;
+          if (!sm) { _dbgTrailNoMesh++; continue; }
           const sat = sd.sats[i];
           const groupOn = sd.groups[sat?.groupId] ?? false;
-          if (!groupOn || hideAllSats) {
-            sm.visible = false;
-            const tr = satTrailObjects[i];
-            if (tr) tr.mesh.visible = false;
-            if (!groupOn && tr) { tr.clear(); satPrevEci[i] = null; }
-            continue;
-          }
 
-          // Frozen satellite: hidden (orbit drifted, position unreliable)
-          if (satFrozen[i]) {
-            sm.visible = false;
-            const tr = satTrailObjects[i];
-            if (tr) tr.mesh.visible = false;
-            continue;
-          }
-
-          // Throttled frame: keep last position, skip SGP4
-          if (!satThisFrame) continue;
-
-          // Compute position at current simulated time
-          const eci = getSatPositionECI(sat, now);
-          if (!eci || !isFinite(eci.x) || !isFinite(eci.y) || !isFinite(eci.z)) { sm.visible = false; continue; }
-
-          // Check altitude deviation — freeze and hide if >1.5x expected
-          const eciDistKm = Math.sqrt(eci.x * eci.x + eci.y * eci.y + eci.z * eci.z);
-          const actualAltKm = eciDistKm - 6371;
-          const expectedAlt = satExpectedAltKm[i];
-          if (actualAltKm > expectedAlt * 1.5 || actualAltKm < expectedAlt / 1.5) {
-            satFrozen[i] = true;
-            sm.visible = false; // hide — position may be wrong
-            const tr = satTrailObjects[i];
-            if (tr) tr.mesh.visible = false;
-            continue;
-          }
-
-          const pos = eciToScene(eci, ep, earthSceneR, sc, now, eRotY);
-          // Sanity: if position is at origin or too far, hide
-          const dxE = pos.x - ep.x, dyE = pos.y - ep.y, dzE = pos.z - ep.z;
-          const distFromEarth = Math.sqrt(dxE * dxE + dyE * dyE + dzE * dzE);
-          if (distFromEarth < 0.001 || distFromEarth > 200 * sc) { sm.visible = false; continue; }
-
-          // Occlusion: hide satellite if it's behind Earth (zero-allocation)
-          const earthR = earthSceneR * sc;
-          const cex = ep.x - cam.position.x, cey = ep.y - cam.position.y, cez = ep.z - cam.position.z;
-          const csx = pos.x - cam.position.x, csy = pos.y - cam.position.y, csz = pos.z - cam.position.z;
-          const camEarthDist = Math.sqrt(cex * cex + cey * cey + cez * cez);
-          if (camEarthDist > earthR * 1.5) {
-            const camSatDist = Math.sqrt(csx * csx + csy * csy + csz * csz);
-            const dot = (cex * csx + cey * csy + cez * csz) / (camEarthDist * camSatDist);
-            if (dot > 0.98 && camSatDist > camEarthDist) { sm.visible = false; continue; }
-          }
-          sm.visible = true;
-          // Jitter for stations: spread radially outward to prevent overlap
-          if (sat.groupId === GID_STATIONS) {
-            const seed = i * 7919;
-            const jitR = earthSceneR * sc * 0.08; // radial outward
-            const dxR = pos.x - ep.x, dyR = pos.y - ep.y, dzR = pos.z - ep.z;
-            const dR = Math.sqrt(dxR * dxR + dyR * dyR + dzR * dzR);
-            if (dR > 0.001) {
-              const factor = (Math.abs(Math.sin(seed)) * 0.8 + 0.2) * jitR;
-              pos.x += (dxR / dR) * factor;
-              pos.y += (dyR / dR) * factor;
-              pos.z += (dzR / dR) * factor;
-            }
-          }
-          sm.position.set(pos.x, pos.y, pos.z);
-
-          const isStation = sat.groupId === GID_STATIONS;
-          // Stations 3x bigger than regular sats
-          // Minimum size scales with Earth: 0.1% of Earth's scene radius (≈6km equiv, ~3px when Earth fills screen)
-          const minSatSize = earthSceneR * sc * SAT_MIN_SIZE_FACTOR;
-          if (focTinySize > 0 && i !== focSatIdx) {
-            sm.scale.setScalar(focTinySize);
-          } else {
-            const thisSize = isStation ? baseSatSize * STATION_SCALE : baseSatSize;
-            sm.scale.setScalar(Math.max(thisSize, isStation ? minSatSize * 2 : minSatSize));
-          }
-
-          // ═══ Trail emission (append-only, angular-density) ═══
+          // ═══ Trail emission FIRST — before any mesh-visibility continues ═══
+          // This follows the reference pattern: emit every frame, independently of mesh visibility
           const trail = satTrailObjects[i];
-          if (trail && showTrails) {
+          if (trail && showTrails && groupOn && !hideAllSats && !satFrozen[i]) {
             if (frameCount % emitInterval === (i % emitInterval)) {
+              // Compute ECI for trail (independent of mesh position SGP4)
               const sr2 = sat.satrec as any;
               const periodSec = sr2.no ? (2 * Math.PI / sr2.no) * 60 : 5400;
               const dtSim = dt * spd * emitInterval;
@@ -1867,7 +1793,68 @@ export default function App() {
             trail.mesh.visible = trail.n > 1;
             trail.update(cfg.satTrailOpacity);
           } else if (trail) {
+            if (!groupOn) { trail.clear(); satPrevEci[i] = null; }
             trail.mesh.visible = false;
+          }
+
+          // ═══ Mesh position update (separate from trail) ═══
+          if (!groupOn || hideAllSats) {
+            sm.visible = false;
+            continue;
+          }
+          if (satFrozen[i]) { sm.visible = false; continue; }
+          if (!satThisFrame) continue;
+
+          const eci = getSatPositionECI(sat, now);
+          if (!eci || !isFinite(eci.x) || !isFinite(eci.y) || !isFinite(eci.z)) { sm.visible = false; continue; }
+
+          // Check altitude deviation — freeze and hide if >1.5x expected
+          const eciDistKm = Math.sqrt(eci.x * eci.x + eci.y * eci.y + eci.z * eci.z);
+          const actualAltKm = eciDistKm - 6371;
+          const expectedAlt = satExpectedAltKm[i];
+          if (actualAltKm > expectedAlt * 1.5 || actualAltKm < expectedAlt / 1.5) {
+            satFrozen[i] = true;
+            sm.visible = false;
+            continue;
+          }
+
+          const pos = eciToScene(eci, ep, earthSceneR, sc, now, eRotY);
+          const dxE = pos.x - ep.x, dyE = pos.y - ep.y, dzE = pos.z - ep.z;
+          const distFromEarth = Math.sqrt(dxE * dxE + dyE * dyE + dzE * dzE);
+          if (distFromEarth < 0.001 || distFromEarth > 200 * sc) { sm.visible = false; continue; }
+
+          // Occlusion check (mesh only — trail emitted regardless)
+          const earthR = earthSceneR * sc;
+          const cex = ep.x - cam.position.x, cey = ep.y - cam.position.y, cez = ep.z - cam.position.z;
+          const csx = pos.x - cam.position.x, csy = pos.y - cam.position.y, csz = pos.z - cam.position.z;
+          const camEarthDist = Math.sqrt(cex * cex + cey * cey + cez * cez);
+          if (camEarthDist > earthR * 1.5) {
+            const camSatDist = Math.sqrt(csx * csx + csy * csy + csz * csz);
+            const dot = (cex * csx + cey * csy + cez * csz) / (camEarthDist * camSatDist);
+            if (dot > 0.98 && camSatDist > camEarthDist) { sm.visible = false; continue; }
+          }
+          sm.visible = true;
+          if (sat.groupId === GID_STATIONS) {
+            const seed = i * 7919;
+            const jitR = earthSceneR * sc * 0.08;
+            const dxR = pos.x - ep.x, dyR = pos.y - ep.y, dzR = pos.z - ep.z;
+            const dR = Math.sqrt(dxR * dxR + dyR * dyR + dzR * dzR);
+            if (dR > 0.001) {
+              const factor = (Math.abs(Math.sin(seed)) * 0.8 + 0.2) * jitR;
+              pos.x += (dxR / dR) * factor;
+              pos.y += (dyR / dR) * factor;
+              pos.z += (dzR / dR) * factor;
+            }
+          }
+          sm.position.set(pos.x, pos.y, pos.z);
+
+          const isStation = sat.groupId === GID_STATIONS;
+          const minSatSize = earthSceneR * sc * SAT_MIN_SIZE_FACTOR;
+          if (focTinySize > 0 && i !== focSatIdx) {
+            sm.scale.setScalar(focTinySize);
+          } else {
+            const thisSize = isStation ? baseSatSize * STATION_SCALE : baseSatSize;
+            sm.scale.setScalar(Math.max(thisSize, isStation ? minSatSize * 2 : minSatSize));
           }
         }
 
