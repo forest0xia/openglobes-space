@@ -3,15 +3,15 @@ import * as THREE from 'three';
 import { PLANETS } from './data/planets';
 import { NATURAL_MOONS, MOON_COUNTS } from './data/moons';
 import { PROBES } from './data/probesMeta';
-import { fetchAllSatellites, fetchStarlinkSatellites, getSatPositionECI, eciToScene, SAT_GROUPS, type SatRecord } from './services/celestrak';
+import { fetchAllSatellites, fetchStarlinkSatellites, getSatPositionECI, eciToScene, SAT_GROUPS, type SatRecord, gstime } from './services/celestrak';
 import { createSatelliteModel } from './utils/satModel'; // only used for focused satellite detail model
 import { createProbeModel } from './utils/probeModels';
-import { createTrailMaterial, createTrailIndexAttribute } from './utils/trailShader';
+import { SatTrail } from './utils/SatTrail';
 import { getSatDisplayName } from './data/satNames';
 import { Line2 } from 'three/examples/jsm/lines/Line2.js';
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
 import { LineGeometry } from 'three/examples/jsm/lines/LineGeometry.js';
-import { h2n, darkenHex, TRACKS_LIST, BASE, SPEED_PRESETS, TEX_FILES, procTex, P, PR } from './config/constants';
+import { h2n, darkenHex, TRACKS_LIST, BASE, SPEED_PRESETS, TEX_FILES, procTex, P, PR, ANGLE_STEP, MAX_EMIT_PER_SAT, SGP4_BUDGET_PER_FRAME } from './config/constants';
 import { addAtmosphere, addSurfaceAtmo, PLANET_ATMO_CONFIGS } from './shaders/atmosphere';
 import { CfgStepper, VolStepper, CfgToggle } from './components/Controls';
 // ═══ Module-level constants (accessible in both useEffect and JSX) ═══
@@ -555,12 +555,15 @@ export default function App() {
     const earthP = P.find(p => p.id === 'earth')!;
     const earthSceneR = earthP.r;
 
-    const satTrails: (Float32Array | null)[] = [];
-    const satTrailLines: (THREE.Line | null)[] = [];
-    const satTrailReady: boolean[] = [];
+    const satTrailObjects: (SatTrail | null)[] = [];
+    const satPrevEci: ({ x: number; y: number; z: number } | null)[] = [];
     // Satellite orbit deviation tracking
     const satExpectedAltKm: number[] = []; // expected altitude from TLE
     const satFrozen: boolean[] = [];       // true = orbit drifted, position frozen
+    const kmToScene = earthSceneR / 6371;
+    const trailGroup = new THREE.Group();
+    trailGroup.name = 'satTrailGroup';
+    scene.add(trailGroup);
 
     // ═══ Satellite resource lifecycle: create on demand, dispose when off ═══
     // Satellite names shown via bracket hover — no separate label system
@@ -585,20 +588,12 @@ export default function App() {
       sm.visible = false;
       scene.add(sm);
       satMeshes[i] = sm;
-      // Per-satellite trail line (THREE.Line + fading shader)
-      const trailArr = new Float32Array(TRAIL_LEN * 3);
-      satTrails[i] = trailArr;
-      satTrailReady[i] = false;
-      const trailGeo = new THREE.BufferGeometry();
-      trailGeo.setAttribute('position', new THREE.BufferAttribute(trailArr, 3));
-      trailGeo.setAttribute('trailIndex', createTrailIndexAttribute(TRAIL_LEN));
-      trailGeo.setDrawRange(0, 0);
-      const tMat = createTrailMaterial('#ffffff');
-      const trailLine = new THREE.Line(trailGeo, tMat);
-      trailLine.visible = false;
-      trailLine.frustumCulled = false;
-      scene.add(trailLine);
-      satTrailLines[i] = trailLine;
+      // Per-satellite ribbon trail (append-only, birth-based fade)
+      const ribbonW = kmToScene * 20; // ~20km ribbon width in ECI-scaled space
+      const trail = new SatTrail(sat.color, sat.groupId === GID_STATIONS ? ribbonW * 3 : ribbonW);
+      trailGroup.add(trail.mesh);
+      satTrailObjects[i] = trail;
+      satPrevEci[i] = null; // will be set on first SGP4 position
     }
 
     function dematerializeSat(i: number) {
@@ -608,10 +603,9 @@ export default function App() {
         // Geometry and material are SHARED — don't dispose them
         satMeshes[i] = null;
       }
-      const trail = satTrailLines[i];
-      if (trail) { scene.remove(trail); trail.geometry.dispose(); (trail.material as THREE.Material).dispose(); satTrailLines[i] = null; }
-      satTrails[i] = null;
-      satTrailReady[i] = false;
+      const trail = satTrailObjects[i];
+      if (trail) { trailGroup.remove(trail.mesh); trail.dispose(); satTrailObjects[i] = null; }
+      satPrevEci[i] = null;
     }
 
     // Load satellite data DURING intro (preload behind splash screen)
@@ -622,9 +616,8 @@ export default function App() {
       if (satCountRef.current) satCountRef.current.textContent = `${sats.length} 颗卫星追踪中`;
       for (let i = 0; i < sats.length; i++) {
         satMeshes.push(null);
-        satTrails.push(null);
-        satTrailLines.push(null);
-        satTrailReady.push(false);
+        satTrailObjects.push(null);
+        satPrevEci.push(null);
         const sr = sats[i].satrec as any;
         const n = sr.no;
         const altKm = n > 0 ? Math.pow(398600.4418 / Math.pow(n / 60, 2), 1 / 3) - 6371 : 500;

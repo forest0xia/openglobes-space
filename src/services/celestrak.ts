@@ -294,3 +294,5 @@ export function eciToScene(
     z: earthPos.z + ez * kmToScene * scaleFactor,
   };
 }
+
+export { gstime } from 'satellite.js';

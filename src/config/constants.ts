@@ -32,6 +32,11 @@ export const SPEED_PRESETS = [
   { v: 15552000, label: '6个月' }, { v: 31557600, label: '1年' },
 ];
 
+// ═══ Trail system (append-only ribbon) ═══
+export const ANGLE_STEP = 0.05;         // ~2.9° per trail sample — smooth curve
+export const MAX_EMIT_PER_SAT = 8;      // max trail points per satellite per emit cycle
+export const SGP4_BUDGET_PER_FRAME = 500; // max total SGP4 calls for trail emission per frame
+
 // Texture file map — loaded from public/textures/
 export const TEX_FILES: Record<string, string> = {
   sun: 'sun.jpg', mercury: 'mercury.jpg', venus: 'venus.jpg',
