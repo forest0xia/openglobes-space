@@ -13,6 +13,7 @@ import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
 import { LineGeometry } from 'three/examples/jsm/lines/LineGeometry.js';
 import { h2n, darkenHex, TRACKS_LIST, BASE, SPEED_PRESETS, TEX_FILES, procTex, P, PR } from './config/constants';
 import { addAtmosphere, addSurfaceAtmo, PLANET_ATMO_CONFIGS } from './shaders/atmosphere';
+import { createSun, updateSun, type SunMeshes } from './shaders/sun';
 import { CfgStepper, VolStepper, CfgToggle } from './components/Controls';
 // ═══ Module-level constants (accessible in both useEffect and JSX) ═══
 const GID_STARLINK = 'starlink';
@@ -132,6 +133,7 @@ export default function App() {
 
     // Multi-track space ambient audio
     const TRACKS = [
+      { file: 'ambience03.4.ogg', name: '深空氛围' },
       { file: 'space-ambient.mp3', name: '深空漂流' },
       { file: 'cosmic-drift.mp3', name: '星际穿越' },
       { file: 'stellar-pulse.mp3', name: '脉冲星' },
@@ -142,7 +144,13 @@ export default function App() {
     const audio = new Audio(BASE + 'audio/' + TRACKS[0].file);
     audio.loop = true;
     audio.volume = 0.15;
-    audio.muted = true; // default off
+    audio.muted = false; // default on — autoplay with user interaction fallback
+    // Try autoplay; browsers block until user interacts, then we retry
+    audio.play().catch(() => {
+      const startOnInteract = () => { audio.play().catch(() => {}); window.removeEventListener('click', startOnInteract); window.removeEventListener('keydown', startOnInteract); };
+      window.addEventListener('click', startOnInteract, { once: false });
+      window.addEventListener('keydown', startOnInteract, { once: false });
+    });
 
     (window as any).__toggleSound = () => {
       audio.muted = !audio.muted;
@@ -263,6 +271,7 @@ export default function App() {
     // (glow outlines removed)
     let earthCloudMesh: THREE.Mesh | null = null;
     let moonMesh: THREE.Mesh | null = null;
+    let sunMeshes: SunMeshes | null = null;
     let moonOrbitLine: THREE.Line | Line2 | null = null;
     // earthAtmoMesh removed — cloud layer is sufficient
 
@@ -273,7 +282,7 @@ export default function App() {
       // Fully diffuse — no specular glare. Sun light creates clean half-sphere illumination.
       // Neutral dark emissive so textures show without blue/color tint from the old procedural base.
       const mat = p.sun
-        ? new THREE.MeshBasicMaterial({ map: t })
+        ? new THREE.MeshBasicMaterial({ map: t }) // placeholder — replaced below by procedural shader
         : new THREE.MeshStandardMaterial({
             map: t,
             roughness: 1.0,   // matte — no glass marble reflection
@@ -281,8 +290,26 @@ export default function App() {
             emissive: 0x222222,
             emissiveIntensity: .12, // baseline glow so planets never disappear completely
           });
-      const segs = (p.id === 'earth' || p.id === 'jupiter' || p.id === 'saturn') ? 64 : 48;
+      const segs = (p.id === 'earth' || p.id === 'jupiter' || p.id === 'saturn') ? 64 : p.sun ? 64 : 48;
       const m = new THREE.Mesh(new THREE.SphereGeometry(p.r, segs, segs), mat);
+
+      // Sun: procedural plasma surface + corona + prominences + glow
+      if (p.sun) {
+        sunMeshes = createSun(p.r, t);
+        m.geometry = sunMeshes.surface.geometry;
+        m.material = sunMeshes.surface.material;
+        m.add(sunMeshes.corona);
+        scene.add(sunMeshes.glow);
+        for (const prom of sunMeshes.prominences) { scene.add(prom.meshA); scene.add(prom.meshB); }
+        // Load real sun texture into shader uniform (loadTex hot-swap targets .map which ShaderMaterial ignores)
+        const file = TEX_FILES[p.id];
+        if (file) {
+          loader.load(`${BASE}textures/${file}`, (tex) => {
+            tex.colorSpace = THREE.SRGBColorSpace;
+            (sunMeshes!.surface.material as THREE.ShaderMaterial).uniforms.uTex.value = tex;
+          }, undefined, () => {});
+        }
+      }
 
       // Atmosphere glow — from extracted shaders/atmosphere.ts
       const atmoCfg = PLANET_ATMO_CONFIGS[p.id];
@@ -1681,6 +1708,9 @@ export default function App() {
         }
       }
 
+      // Animate sun (procedural plasma + corona billboard)
+      if (sunMeshes) updateSun(sunMeshes, now2 * 0.001, cam);
+
       // Natural moons orbital motion (all except Earth's Moon)
       naturalMoonMeshes.forEach((nm, i) => {
         const parentIdx = nm.userData.parentIdx as number;
@@ -2291,11 +2321,13 @@ export default function App() {
       <div className="nav" ref={navRef} style={uiHidden || !introDone ? { display: 'none' } : undefined} />
 
       {/* Info hint icon — DOM-driven visibility (avoids React re-render on every planet click) */}
+      <div style={uiHidden || !introDone ? { display: 'none' } : undefined}>
       <button className="info-hint" ref={infoHintRef} style={{ display: 'none' }} onClick={() => (window as any).__openInfo()}>
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>
         </svg>
       </button>
+      </div>
 
       <div className="info" ref={infoRef} style={uiHidden || !introDone ? { display: 'none' } : undefined}>
         <div className="info-drag" onPointerDown={(e) => {
