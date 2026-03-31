@@ -3,15 +3,15 @@ import * as THREE from 'three';
 import { PLANETS } from './data/planets';
 import { NATURAL_MOONS, MOON_COUNTS } from './data/moons';
 import { PROBES } from './data/probesMeta';
-import { fetchAllSatellites, fetchStarlinkSatellites, getSatPositionECI, eciToScene, SAT_GROUPS, type SatRecord, gstime } from './services/celestrak';
+import { fetchAllSatellites, fetchStarlinkSatellites, getSatPositionECI, eciToScene, SAT_GROUPS, type SatRecord } from './services/celestrak';
 import { createSatelliteModel } from './utils/satModel'; // only used for focused satellite detail model
 import { createProbeModel } from './utils/probeModels';
-import { SatTrail } from './utils/SatTrail';
+import { SatTrail, TRAIL_N } from './utils/SatTrail';
 import { getSatDisplayName } from './data/satNames';
 import { Line2 } from 'three/examples/jsm/lines/Line2.js';
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
 import { LineGeometry } from 'three/examples/jsm/lines/LineGeometry.js';
-import { h2n, darkenHex, TRACKS_LIST, BASE, SPEED_PRESETS, TEX_FILES, procTex, P, PR, ANGLE_STEP, MAX_EMIT_PER_SAT, SGP4_BUDGET_PER_FRAME } from './config/constants';
+import { h2n, darkenHex, TRACKS_LIST, BASE, SPEED_PRESETS, TEX_FILES, procTex, P, PR } from './config/constants';
 import { addAtmosphere, addSurfaceAtmo, PLANET_ATMO_CONFIGS } from './shaders/atmosphere';
 import { CfgStepper, VolStepper, CfgToggle } from './components/Controls';
 // ═══ Module-level constants (accessible in both useEffect and JSX) ═══
@@ -496,49 +496,6 @@ export default function App() {
       });
     };
 
-    // ═══ Slerp interpolation for smooth trail arcs ═══
-    // Between two ECI positions, emit ribbon segments along a spherical arc.
-    // This ensures smooth curves even when SGP4 samples are far apart at high speed.
-    const SLERP_MAX_SUB = 64; // max subdivisions per SGP4 gap
-    function emitTrailArc(
-      trail: SatTrail,
-      p0: { x: number; y: number; z: number },
-      p1: { x: number; y: number; z: number },
-      scale: number,
-    ): void {
-      const d0 = Math.sqrt(p0.x * p0.x + p0.y * p0.y + p0.z * p0.z);
-      const d1 = Math.sqrt(p1.x * p1.x + p1.y * p1.y + p1.z * p1.z);
-      if (d0 < 1 || d1 < 1) return;
-
-      const dot = (p0.x * p1.x + p0.y * p1.y + p0.z * p1.z) / (d0 * d1);
-      const theta = Math.acos(Math.max(-1, Math.min(1, dot)));
-
-      // No subdivision needed for small angles
-      if (theta < ANGLE_STEP * 1.5) {
-        trail.emit(
-          p1.x * scale, p1.y * scale, p1.z * scale,
-          p1.x - p0.x, p1.y - p0.y, p1.z - p0.z,
-        );
-        return;
-      }
-
-      const nSub = Math.min(Math.ceil(theta / ANGLE_STEP), SLERP_MAX_SUB);
-      const sinTheta = Math.sin(theta);
-      if (sinTheta < 1e-10) return; // degenerate (identical or antipodal)
-
-      let px = p0.x * scale, py = p0.y * scale, pz = p0.z * scale;
-      for (let j = 1; j <= nSub; j++) {
-        const t = j / nSub;
-        const w0 = Math.sin((1 - t) * theta) / sinTheta;
-        const w1 = Math.sin(t * theta) / sinTheta;
-        const ix = (p0.x * w0 + p1.x * w1) * scale;
-        const iy = (p0.y * w0 + p1.y * w1) * scale;
-        const iz = (p0.z * w0 + p1.z * w1) * scale;
-        trail.emit(ix, iy, iz, ix - px, iy - py, iz - pz);
-        px = ix; py = iy; pz = iz;
-      }
-    }
-
     function computeSatOrbits() {
       const sd = satDataRef.current;
       // Dispose old orbit lines first
@@ -596,14 +553,11 @@ export default function App() {
     const earthSceneR = earthP.r;
 
     const satTrailObjects: (SatTrail | null)[] = [];
-    const satPrevEci: ({ x: number; y: number; z: number } | null)[] = [];
+    // Per-satellite center-line positions for trail (scene-coord offsets from Earth center)
+    const satTrailCenters: (Float32Array | null)[] = [];
     // Satellite orbit deviation tracking
     const satExpectedAltKm: number[] = []; // expected altitude from TLE
     const satFrozen: boolean[] = [];       // true = orbit drifted, position frozen
-    const kmToScene = earthSceneR / 6371;
-    const trailGroup = new THREE.Group();
-    trailGroup.name = 'satTrailGroup';
-    scene.add(trailGroup);
 
     // ═══ Satellite resource lifecycle: create on demand, dispose when off ═══
     // Satellite names shown via bracket hover — no separate label system
@@ -617,38 +571,38 @@ export default function App() {
       return mat;
     }
 
+    // Trail width: ~5px at default zoom. earthSceneR * sc ≈ 0.046 scene units = Earth radius.
+    // At default zoom Earth ≈ 500px → 1 scene unit ≈ 10870px → 5px ≈ 0.00046 scene units.
+    // Trail is positioned at Earth center and uses scene coords, so width is in scene units.
+    // We compute per-satellite based on current scale in the rebuild loop.
+    const TRAIL_ORBIT_FRACTION = 0.3; // show 50% of orbit
+
     function materializeSat(i: number) {
       const sat = satDataRef.current.sats[i];
       if (!sat || satMeshes[i]) return;
       const displayName = getSatDisplayName(sat.name, sat.noradId);
       const colNum = typeof sat.color === 'string' ? parseInt(sat.color.replace('#', ''), 16) : sat.color;
-      // Shared geometry + cached material (1 geometry for ALL sats, 1 material per color)
       const sm = new THREE.Mesh(_satSharedGeo, getSatMaterial(colNum));
       sm.userData = { isSat: true, name: sat.name, displayName, groupId: sat.groupId, color: sat.color, satIdx: i };
       sm.visible = false;
       scene.add(sm);
       satMeshes[i] = sm;
-      // Per-satellite ribbon trail (append-only, birth-based fade)
-      // Width in ECI-stored coords; rendered width = ribbonW × trailGroup.scale (~2-3px at default zoom)
-      const ribbonW = kmToScene * 120;
-      const trail = new SatTrail(sat.color, sat.groupId === GID_STATIONS ? ribbonW * 3 : ribbonW);
-      trailGroup.add(trail.mesh);
+      // Per-satellite ribbon trail — width computed dynamically in anim loop
+      const trail = new SatTrail(sat.color, 1); // width placeholder, set in rebuild
+      scene.add(trail.mesh); // added directly to scene (NOT trailGroup)
       satTrailObjects[i] = trail;
-      // Seed prevEci so the very first emit cycle produces a trail point
-      const seedEci = getSatPositionECI(sat, new Date());
-      satPrevEci[i] = seedEci;
+      satTrailCenters[i] = new Float32Array(TRAIL_N * 3);
     }
 
     function dematerializeSat(i: number) {
       const sm = satMeshes[i];
       if (sm) {
         scene.remove(sm);
-        // Geometry and material are SHARED — don't dispose them
         satMeshes[i] = null;
       }
       const trail = satTrailObjects[i];
-      if (trail) { trailGroup.remove(trail.mesh); trail.dispose(); satTrailObjects[i] = null; }
-      satPrevEci[i] = null;
+      if (trail) { scene.remove(trail.mesh); trail.dispose(); satTrailObjects[i] = null; }
+      satTrailCenters[i] = null;
     }
 
     // Load satellite data DURING intro (preload behind splash screen)
@@ -660,7 +614,7 @@ export default function App() {
       for (let i = 0; i < sats.length; i++) {
         satMeshes.push(null);
         satTrailObjects.push(null);
-        satPrevEci.push(null);
+        satTrailCenters.push(null);
         const sr = sats[i].satrec as any;
         const n = sr.no;
         const altKm = n > 0 ? Math.pow(398600.4418 / Math.pow(n / 60, 2), 1 / 3) - 6371 : 500;
@@ -692,6 +646,36 @@ export default function App() {
           const thisSize = isStation ? initBaseSatSize * STATION_SCALE : initBaseSatSize;
           sm.scale.setScalar(Math.max(thisSize, isStation ? initMinSatSize * 2 : initMinSatSize));
           sm.visible = true;
+        }
+      });
+
+      // Pre-fill trails (50% orbit) — makes trails immediately visible
+      sats.forEach((sat, i) => {
+        const trail = satTrailObjects[i];
+        const centers = satTrailCenters[i];
+        if (!trail || !centers || !satMeshes[i]?.visible) return;
+        const sr2 = sat.satrec as any;
+        const periodSec = sr2.no ? (2 * Math.PI / sr2.no) * 60 : 5400;
+        const trailDur = periodSec * TRAIL_ORBIT_FRACTION;
+        const nowMs = initNow.getTime();
+        const td = new Date(nowMs);
+        let allValid = true;
+        for (let s = 0; s < TRAIL_N; s++) {
+          td.setTime(nowMs - (TRAIL_N - 1 - s) / (TRAIL_N - 1) * trailDur * 1000);
+          const pastEci = getSatPositionECI(sat, td);
+          if (pastEci) {
+            const pp = eciToScene(pastEci, ep0, earthSceneR, sc0, initNow, eRotY0);
+            centers[s * 3] = pp.x - ep0.x;
+            centers[s * 3 + 1] = pp.y - ep0.y;
+            centers[s * 3 + 2] = pp.z - ep0.z;
+          } else { allValid = false; }
+        }
+        if (allValid) {
+          // Initial width: rough 3px estimate (corrected every frame in anim loop)
+          (trail as any).w = earthSceneR * sc0 * 0.003;
+          trail.rebuild(centers, TRAIL_N);
+          trail.mesh.visible = true;
+          trail.mesh.position.copy(ep0);
         }
       });
 
@@ -1282,8 +1266,8 @@ export default function App() {
       // Reset satellite state (clear stale SGP4 data + frozen flags)
       const sd = satDataRef.current;
       if (sd.starlinkPositions) sd.starlinkPositions.fill(0);
-      satTrailObjects.forEach(tr => { if (tr) { tr.clear(); tr.mesh.visible = false; } });
-      satPrevEci.fill(null);
+      satTrailObjects.forEach(tr => { if (tr) tr.mesh.visible = false; });
+      satTrailCenters.forEach(c => { if (c) c.fill(0); });
       satFrozen.fill(false);
       (window as any).__closeInfo();
     };
@@ -1737,20 +1721,9 @@ export default function App() {
         const fovRad = (cam as THREE.PerspectiveCamera).fov * Math.PI / 180;
         const focTinySize = focSatIdx >= 0 ? FOCUS_OTHER_SAT_PX * cD * Math.tan(fovRad / 2) / innerHeight : 0;
 
-        // Update trail group transform: ECI→scene via GMST + Earth rotation
-        const gmst = gstime(now);
-        trailGroup.position.copy(ep);
-        trailGroup.rotation.y = -gmst + eRotY;
-        trailGroup.scale.setScalar(sc);
-
-        // Trail emission stagger: budget-adaptive based on actual speed
-        // At low speed: each satellite emits ~1 SGP4 call → more sats per frame
-        // At high speed: each satellite emits up to MAX_EMIT_PER_SAT → fewer sats per frame
-        const typicalPeriod = 5400; // ~90min LEO reference
-        const frameAngle = Math.abs(dt * spd / typicalPeriod) * 2 * Math.PI;
-        const expectedEmitPerSat = Math.min(Math.max(1, Math.ceil(frameAngle / ANGLE_STEP)), MAX_EMIT_PER_SAT);
-        const emitInterval = Math.max(1, Math.ceil(sd.sats.length * expectedEmitPerSat / SGP4_BUDGET_PER_FRAME));
-        const _trailSampleDate = new Date(now.getTime()); // reusable Date for trail emission (avoid per-sat allocation)
+        // Per-satellite 3px trail width: precompute tan(fov/2)/height factor
+        const _tanHalfFov = Math.tan((cam as THREE.PerspectiveCamera).fov * Math.PI / 360);
+        const _pxFactor = 2 * _tanHalfFov / innerHeight * 1.5; // multiply by cam-to-sat distance → half-width
 
         // Hide all satellites + trails when Earth is too small on screen
         const earthScreenForSats = getScreenSize(meshes[eIdx], cam, earthSceneR * sc);
@@ -1758,57 +1731,31 @@ export default function App() {
 
         for (let i = 0; i < sd.sats.length; i++) {
           const sm = sd.meshes[i];
-          if (!sm) { _dbgTrailNoMesh++; continue; }
+          if (!sm) continue;
           const sat = sd.sats[i];
           const groupOn = sd.groups[sat?.groupId] ?? false;
 
-          // ═══ Trail emission FIRST — before any mesh-visibility continues ═══
-          // This follows the reference pattern: emit every frame, independently of mesh visibility
-          const trail = satTrailObjects[i];
-          if (trail && showTrails && groupOn && !hideAllSats && !satFrozen[i]) {
-            if (frameCount % emitInterval === (i % emitInterval)) {
-              // Compute ECI for trail (independent of mesh position SGP4)
-              const sr2 = sat.satrec as any;
-              const periodSec = sr2.no ? (2 * Math.PI / sr2.no) * 60 : 5400;
-              const dtSim = dt * spd * emitInterval;
-              const angleSwept = (dtSim / periodSec) * 2 * Math.PI;
-              let nEmit = Math.ceil(Math.abs(angleSwept) / ANGLE_STEP);
-              nEmit = Math.max(1, Math.min(nEmit, MAX_EMIT_PER_SAT));
-
-              const subDt = dtSim / nEmit;
-              const nowMs = now.getTime();
-              let prev = satPrevEci[i];
-
-              for (let k = 1; k <= nEmit; k++) {
-                _trailSampleDate.setTime(nowMs - dtSim * 1000 + k * subDt * 1000);
-                const sEci = getSatPositionECI(sat, _trailSampleDate);
-                if (!sEci) continue;
-                if (prev) {
-                  emitTrailArc(trail, prev, sEci, kmToScene);
-                }
-                prev = sEci;
-              }
-              satPrevEci[i] = prev;
-            }
-            trail.mesh.visible = trail.n > 1;
-            trail.update(cfg.satTrailOpacity);
-          } else if (trail) {
-            if (!groupOn) { trail.clear(); satPrevEci[i] = null; }
-            trail.mesh.visible = false;
-          }
-
-          // ═══ Mesh position update (separate from trail) ═══
           if (!groupOn || hideAllSats) {
             sm.visible = false;
+            const tr = satTrailObjects[i];
+            if (tr) tr.mesh.visible = false;
+            if (!groupOn && satTrailCenters[i]) { satTrailCenters[i]!.fill(0); }
             continue;
           }
-          if (satFrozen[i]) { sm.visible = false; continue; }
+
+          if (satFrozen[i]) {
+            sm.visible = false;
+            const tr = satTrailObjects[i];
+            if (tr) tr.mesh.visible = false;
+            continue;
+          }
+
           if (!satThisFrame) continue;
 
           const eci = getSatPositionECI(sat, now);
           if (!eci || !isFinite(eci.x) || !isFinite(eci.y) || !isFinite(eci.z)) { sm.visible = false; continue; }
 
-          // Check altitude deviation — freeze and hide if >1.5x expected
+          // Check altitude deviation — freeze if orbit drifted
           const eciDistKm = Math.sqrt(eci.x * eci.x + eci.y * eci.y + eci.z * eci.z);
           const actualAltKm = eciDistKm - 6371;
           const expectedAlt = satExpectedAltKm[i];
@@ -1823,17 +1770,18 @@ export default function App() {
           const distFromEarth = Math.sqrt(dxE * dxE + dyE * dyE + dzE * dzE);
           if (distFromEarth < 0.001 || distFromEarth > 200 * sc) { sm.visible = false; continue; }
 
-          // Occlusion check (mesh only — trail emitted regardless)
+          // Occlusion check (mesh only — trail still updates below)
           const earthR = earthSceneR * sc;
           const cex = ep.x - cam.position.x, cey = ep.y - cam.position.y, cez = ep.z - cam.position.z;
           const csx = pos.x - cam.position.x, csy = pos.y - cam.position.y, csz = pos.z - cam.position.z;
           const camEarthDist = Math.sqrt(cex * cex + cey * cey + cez * cez);
+          let satOccluded = false;
           if (camEarthDist > earthR * 1.5) {
             const camSatDist = Math.sqrt(csx * csx + csy * csy + csz * csz);
             const dot = (cex * csx + cey * csy + cez * csz) / (camEarthDist * camSatDist);
-            if (dot > 0.98 && camSatDist > camEarthDist) { sm.visible = false; continue; }
+            if (dot > 0.98 && camSatDist > camEarthDist) satOccluded = true;
           }
-          sm.visible = true;
+          sm.visible = !satOccluded;
           if (sat.groupId === GID_STATIONS) {
             const seed = i * 7919;
             const jitR = earthSceneR * sc * 0.08;
@@ -1855,6 +1803,42 @@ export default function App() {
           } else {
             const thisSize = isStation ? baseSatSize * STATION_SCALE : baseSatSize;
             sm.scale.setScalar(Math.max(thisSize, isStation ? minSatSize * 2 : minSatSize));
+          }
+
+          // ═══ Trail: staggered SGP4 recompute + rebuild every frame ═══
+          const centers = satTrailCenters[i];
+          const trail = satTrailObjects[i];
+          if (centers && trail && showTrails) {
+            const trailStagger = spd < 60 ? 60 : spd < 300 ? 20 : 8;
+            const lastIdx = TRAIL_N - 1;
+            if (frameCount % trailStagger === (i % trailStagger)) {
+              // Full recompute: TRAIL_N SGP4 calls spanning 50% orbit
+              const sr2 = sat.satrec as any;
+              const periodSec = sr2.no ? (2 * Math.PI / sr2.no) * 60 : 5400;
+              const trailDuration = periodSec * TRAIL_ORBIT_FRACTION;
+              const nowMs = now.getTime();
+              const trailDate = new Date(nowMs);
+              for (let s = 0; s <= lastIdx; s++) {
+                trailDate.setTime(nowMs - (lastIdx - s) / lastIdx * trailDuration * 1000);
+                const pastEci = getSatPositionECI(sat, trailDate);
+                if (pastEci) {
+                  const pp = eciToScene(pastEci, ep, earthSceneR, sc, now, eRotY);
+                  centers[s * 3] = pp.x - ep.x;
+                  centers[s * 3 + 1] = pp.y - ep.y;
+                  centers[s * 3 + 2] = pp.z - ep.z;
+                }
+              }
+            }
+            // Always update head to current satellite position + rebuild ribbon
+            centers[lastIdx * 3] = pos.x - ep.x;
+            centers[lastIdx * 3 + 1] = pos.y - ep.y;
+            centers[lastIdx * 3 + 2] = pos.z - ep.z;
+            const _camRel = { x: cam.position.x - ep.x, y: cam.position.y - ep.y, z: cam.position.z - ep.z };
+            trail.rebuild(centers, TRAIL_N, _camRel, _pxFactor);
+            trail.mesh.visible = true;
+            trail.mesh.position.copy(ep);
+          } else if (trail) {
+            trail.mesh.visible = false;
           }
         }
 
