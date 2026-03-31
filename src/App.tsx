@@ -296,8 +296,8 @@ export default function App() {
       // Sun: procedural plasma surface + corona + prominences + glow
       if (p.sun) {
         sunMeshes = createSun(p.r, t);
-        m.geometry = sunMeshes.surface.geometry;
-        m.material = sunMeshes.surface.material;
+        (m as any).geometry = sunMeshes.surface.geometry;
+        (m as any).material = sunMeshes.surface.material;
         m.add(sunMeshes.corona);
         scene.add(sunMeshes.glow);
         for (const prom of sunMeshes.prominences) { scene.add(prom.meshA); scene.add(prom.meshB); }
