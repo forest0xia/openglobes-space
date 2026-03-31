@@ -3,10 +3,10 @@ import * as THREE from 'three';
 import { PLANETS } from './data/planets';
 import { NATURAL_MOONS, MOON_COUNTS } from './data/moons';
 import { PROBES } from './data/probesMeta';
-import { fetchAllSatellites, fetchStarlinkSatellites, getSatPositionECI, eciToScene, SAT_GROUPS, type SatRecord } from './services/celestrak';
+import { fetchAllSatellites, fetchStarlinkSatellites, getSatPositionECI, eciToScene, SAT_GROUPS, type SatRecord, gstime } from './services/celestrak';
 import { createSatelliteModel } from './utils/satModel'; // only used for focused satellite detail model
 import { createProbeModel } from './utils/probeModels';
-import { SatTrail, TRAIL_N } from './utils/SatTrail';
+import { createTrailLine, TRAIL_N } from './utils/SatTrail';
 import { getSatDisplayName } from './data/satNames';
 import { Line2 } from 'three/examples/jsm/lines/Line2.js';
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
@@ -41,6 +41,8 @@ export default function App() {
   const [satListOpen, setSatListOpen] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [mobileSettingsOpen, setMobileSettingsOpen] = useState(false);
+  const [uiHidden, setUiHidden] = useState(false);
+  const [introDone, setIntroDone] = useState(false);
   // Close all panels — only one panel at a time
   const closeAllPanels = (except?: string) => {
     if (except !== 'sat') setSatListOpen(false);
@@ -348,7 +350,7 @@ export default function App() {
       }
 
       if (p.ring) {
-        const ringMat = new THREE.MeshBasicMaterial({ color: 0xD4C090, side: THREE.DoubleSide, transparent: true, opacity: .4 });
+        const ringMat = new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide, transparent: true, opacity: .75 });
         // Try loading ring texture
         loader.load(`${BASE}textures/saturn_ring.png`, (rt) => {
           rt.colorSpace = THREE.SRGBColorSpace; ringMat.map = rt; ringMat.needsUpdate = true;
@@ -551,19 +553,32 @@ export default function App() {
     const satMeshes: (THREE.Mesh | null)[] = [];
     const earthP = P.find(p => p.id === 'earth')!;
     const earthSceneR = earthP.r;
+    const kmToScene = earthSceneR / 6371;
+    const TRAIL_ORBIT_FRACTION = 0.35;
 
-    const satTrailObjects: (SatTrail | null)[] = [];
-    // Per-satellite center-line positions for trail (scene-coord offsets from Earth center)
-    const satTrailCenters: (Float32Array | null)[] = [];
-    // Satellite orbit deviation tracking
-    const satExpectedAltKm: number[] = []; // expected altitude from TLE
-    const satFrozen: boolean[] = [];       // true = orbit drifted, position frozen
+    const satTrailLines: (THREE.Line | null)[] = [];
+    const satTrailData: (Float32Array | null)[] = [];
+    const satTrailReady: boolean[] = [];
+    const satExpectedAltKm: number[] = [];
+    const satFrozen: boolean[] = [];
 
-    // ═══ Satellite resource lifecycle: create on demand, dispose when off ═══
-    // Satellite names shown via bracket hover — no separate label system
-    // Shared geometry + cached materials for all non-Starlink satellites
-    // All satellites look identical at normal zoom (sub-pixel), no need for individual GLB models
-    const _satSharedGeo = new THREE.BoxGeometry(1, 0.6, 0.6); // unit box, scaled per-satellite
+    // Parent group for all satellite trails: handles ECI→scene via GMST rotation
+    const trailGroup = new THREE.Group();
+    scene.add(trailGroup);
+
+    // Probe trails (scene coords, positioned at orbit center)
+    const probeTrailLines: THREE.Line[] = [];
+    const probeTrailData: Float32Array[] = [];
+    const probeTrailReady: boolean[] = [];
+    PR.forEach(() => {
+      const { line, positions } = createTrailLine();
+      scene.add(line);
+      probeTrailLines.push(line);
+      probeTrailData.push(positions);
+      probeTrailReady.push(false);
+    });
+
+    const _satSharedGeo = new THREE.BoxGeometry(1, 0.6, 0.6);
     const _satMatCache = new Map<number, THREE.MeshBasicMaterial>();
     function getSatMaterial(color: number): THREE.MeshBasicMaterial {
       let mat = _satMatCache.get(color);
@@ -571,11 +586,26 @@ export default function App() {
       return mat;
     }
 
-    // Trail width: ~5px at default zoom. earthSceneR * sc ≈ 0.046 scene units = Earth radius.
-    // At default zoom Earth ≈ 500px → 1 scene unit ≈ 10870px → 5px ≈ 0.00046 scene units.
-    // Trail is positioned at Earth center and uses scene coords, so width is in scene units.
-    // We compute per-satellite based on current scale in the rebuild loop.
-    const TRAIL_ORBIT_FRACTION = 0.3; // show 50% of orbit
+    /** Compute TRAIL_N ECI positions spanning 50% orbit. */
+    function computeTrailECI(sat: SatRecord, positions: Float32Array, nowDate: Date): boolean {
+      const sr = sat.satrec as any;
+      const periodSec = sr.no ? (2 * Math.PI / sr.no) * 60 : 5400;
+      const durSec = periodSec * TRAIL_ORBIT_FRACTION;
+      const nowMs = nowDate.getTime();
+      const d = new Date(nowMs);
+      const last = TRAIL_N - 1;
+      let allValid = true;
+      for (let s = 0; s <= last; s++) {
+        d.setTime(nowMs - (last - s) / last * durSec * 1000);
+        const eci = getSatPositionECI(sat, d);
+        if (eci) {
+          positions[s * 3] = eci.x * kmToScene;
+          positions[s * 3 + 1] = eci.y * kmToScene;
+          positions[s * 3 + 2] = eci.z * kmToScene;
+        } else { allValid = false; }
+      }
+      return allValid;
+    }
 
     function materializeSat(i: number) {
       const sat = satDataRef.current.sats[i];
@@ -587,22 +617,30 @@ export default function App() {
       sm.visible = false;
       scene.add(sm);
       satMeshes[i] = sm;
-      // Per-satellite ribbon trail — width computed dynamically in anim loop
-      const trail = new SatTrail(sat.color, 1); // width placeholder, set in rebuild
-      scene.add(trail.mesh); // added directly to scene (NOT trailGroup)
-      satTrailObjects[i] = trail;
-      satTrailCenters[i] = new Float32Array(TRAIL_N * 3);
+      // THREE.Line trail in ECI coords — trailGroup handles GMST rotation
+      const { line, positions } = createTrailLine();
+      trailGroup.add(line);
+      satTrailLines[i] = line;
+      satTrailData[i] = positions;
+      satTrailReady[i] = false;
+      // Pre-fill (50% orbit) so trail is immediately visible
+      const simNow = new Date((typeof simStartMs !== 'undefined' ? simStartMs : Date.now()) + (typeof t !== 'undefined' ? t : 0) * 1000);
+      if (computeTrailECI(sat, positions, simNow)) {
+        satTrailReady[i] = true;
+        line.visible = true;
+        line.geometry.attributes.position.needsUpdate = true;
+        line.geometry.setDrawRange(0, TRAIL_N);
+        (line.material as THREE.ShaderMaterial).uniforms.activePoints.value = TRAIL_N;
+      }
     }
 
     function dematerializeSat(i: number) {
       const sm = satMeshes[i];
-      if (sm) {
-        scene.remove(sm);
-        satMeshes[i] = null;
-      }
-      const trail = satTrailObjects[i];
-      if (trail) { scene.remove(trail.mesh); trail.dispose(); satTrailObjects[i] = null; }
-      satTrailCenters[i] = null;
+      if (sm) { scene.remove(sm); satMeshes[i] = null; }
+      const line = satTrailLines[i];
+      if (line) { trailGroup.remove(line); line.geometry.dispose(); (line.material as THREE.Material).dispose(); satTrailLines[i] = null; }
+      satTrailData[i] = null;
+      satTrailReady[i] = false;
     }
 
     // Load satellite data DURING intro (preload behind splash screen)
@@ -613,8 +651,9 @@ export default function App() {
       if (satCountRef.current) satCountRef.current.textContent = `${sats.length} 颗卫星追踪中`;
       for (let i = 0; i < sats.length; i++) {
         satMeshes.push(null);
-        satTrailObjects.push(null);
-        satTrailCenters.push(null);
+        satTrailLines.push(null);
+        satTrailData.push(null);
+        satTrailReady.push(false);
         const sr = sats[i].satrec as any;
         const n = sr.no;
         const altKm = n > 0 ? Math.pow(398600.4418 / Math.pow(n / 60, 2), 1 / 3) - 6371 : 500;
@@ -649,35 +688,14 @@ export default function App() {
         }
       });
 
-      // Pre-fill trails (50% orbit) — makes trails immediately visible
-      sats.forEach((sat, i) => {
-        const trail = satTrailObjects[i];
-        const centers = satTrailCenters[i];
-        if (!trail || !centers || !satMeshes[i]?.visible) return;
-        const sr2 = sat.satrec as any;
-        const periodSec = sr2.no ? (2 * Math.PI / sr2.no) * 60 : 5400;
-        const trailDur = periodSec * TRAIL_ORBIT_FRACTION;
-        const nowMs = initNow.getTime();
-        const td = new Date(nowMs);
-        let allValid = true;
-        for (let s = 0; s < TRAIL_N; s++) {
-          td.setTime(nowMs - (TRAIL_N - 1 - s) / (TRAIL_N - 1) * trailDur * 1000);
-          const pastEci = getSatPositionECI(sat, td);
-          if (pastEci) {
-            const pp = eciToScene(pastEci, ep0, earthSceneR, sc0, initNow, eRotY0);
-            centers[s * 3] = pp.x - ep0.x;
-            centers[s * 3 + 1] = pp.y - ep0.y;
-            centers[s * 3 + 2] = pp.z - ep0.z;
-          } else { allValid = false; }
-        }
-        if (allValid) {
-          // Initial width: rough 3px estimate (corrected every frame in anim loop)
-          (trail as any).w = earthSceneR * sc0 * 0.003;
-          trail.rebuild(centers, TRAIL_N);
-          trail.mesh.visible = true;
-          trail.mesh.position.copy(ep0);
-        }
-      });
+      // Trails already pre-filled in materializeSat() via prefillSatTrail()
+      // Just need to set initial trailGroup transform
+      {
+        const gmst0 = gstime(initNow);
+        trailGroup.position.copy(ep0);
+        trailGroup.rotation.y = gmst0 - eRotY0;
+        trailGroup.scale.setScalar(sc0);
+      }
 
       satDataLoaded = true;
       const prog = document.getElementById('__introProgress');
@@ -1242,9 +1260,17 @@ export default function App() {
       if (spdTxtRef.current) spdTxtRef.current.textContent = SPEED_PRESETS[spdIdx].label + '/秒';
     }
     (window as any).__changeSpd = (dir: number) => {
+      const prevSpd = spd;
       spdIdx = Math.max(0, Math.min(SPEED_PRESETS.length - 1, spdIdx + dir));
       spd = SPEED_PRESETS[spdIdx].v;
       updSpd();
+      // When dropping from high speed (satellites hidden) to low speed:
+      // resync to real time + clear frozen flags so satellites restart cleanly
+      if (prevSpd > SPEED_HIDE_UI && spd <= SPEED_HIDE_UI) {
+        simStartMs = Date.now(); t = 0; lastTime = performance.now();
+        satFrozen.fill(false);
+        satTrailReady.fill(false);
+      }
     };
     (window as any).__togglePlay = () => {
       paused = !paused;
@@ -1266,8 +1292,8 @@ export default function App() {
       // Reset satellite state (clear stale SGP4 data + frozen flags)
       const sd = satDataRef.current;
       if (sd.starlinkPositions) sd.starlinkPositions.fill(0);
-      satTrailObjects.forEach(tr => { if (tr) tr.mesh.visible = false; });
-      satTrailCenters.forEach(c => { if (c) c.fill(0); });
+      satTrailLines.forEach(l => { if (l) { l.visible = false; l.geometry.setDrawRange(0, 0); } });
+      satTrailReady.fill(false);
       satFrozen.fill(false);
       (window as any).__closeInfo();
     };
@@ -1577,7 +1603,10 @@ export default function App() {
       animId = requestAnimationFrame(anim);
       const now2 = performance.now(); const dt = Math.min((now2 - lastTime) / 1000, 0.1); lastTime = now2; // clamp to avoid spikes
       frameCount++;
-      if (!paused) t += dt * spd; // t in accelerated real seconds
+      if (!paused) t += dt * spd;
+      // Cap simulation at 20 years from start (beyond this, all orbits are inaccurate)
+      const MAX_SIM_SEC = 20 * 365.25 * 86400; // 20 years in seconds
+      if (t > MAX_SIM_SEC) t = MAX_SIM_SEC;
 
       P.forEach((p, i) => {
         meshes[i].rotation.y = t * planetSelfRotRates[i];
@@ -1703,11 +1732,52 @@ export default function App() {
           m.position.set(Math.cos(da) * pr.dist, 0, Math.sin(da) * pr.dist);
         }
         m.rotation.y = t * (2 * Math.PI / 86400); // slow spin, ~1 rev/day at real time
+
+        // ═══ Probe trail: recompute 50% orbit every 120 frames ═══
+        const pLine = probeTrailLines[i];
+        const pData = probeTrailData[i];
+        if (pLine && pData && m.visible && showTrails) {
+          const orbCenter = pr.orb !== undefined ? meshes[pr.orb].position : new THREE.Vector3(0, 0, 0);
+          if (frameCount % 120 === (i % 120)) {
+            const orbRate = pr.orb !== undefined ? EARTH_RATE * 0.5 : EARTH_RATE * 0.001;
+            const trailDurSec = (2 * Math.PI / orbRate) * 0.5;
+            const last = TRAIL_N - 1;
+            for (let s = 0; s <= last; s++) {
+              const pastT = t - (last - s) / last * trailDurSec;
+              const pastAngle = pastT * EARTH_RATE;
+              if (pr.orb !== undefined) {
+                const pa = pastAngle * 0.5 + i * 2.3;
+                pData[s * 3] = Math.cos(pa) * (pr.od || 3);
+                pData[s * 3 + 1] = 0;
+                pData[s * 3 + 2] = Math.sin(pa) * (pr.od || 3);
+              } else {
+                const pda = pr.ang + pastAngle * 0.001;
+                pData[s * 3] = Math.cos(pda) * pr.dist;
+                pData[s * 3 + 1] = 0;
+                pData[s * 3 + 2] = Math.sin(pda) * pr.dist;
+              }
+            }
+            probeTrailReady[i] = true;
+          }
+          // Head = current probe offset from orbit center
+          const last3 = (TRAIL_N - 1) * 3;
+          pData[last3] = m.position.x - orbCenter.x;
+          pData[last3 + 1] = m.position.y - orbCenter.y;
+          pData[last3 + 2] = m.position.z - orbCenter.z;
+          pLine.geometry.attributes.position.needsUpdate = true;
+          pLine.visible = probeTrailReady[i];
+          pLine.geometry.setDrawRange(0, TRAIL_N);
+          (pLine.material as THREE.ShaderMaterial).uniforms.activePoints.value = TRAIL_N;
+          pLine.position.copy(orbCenter);
+        } else if (pLine) {
+          pLine.visible = false;
+        }
       });
 
       // ═══ Update satellite positions + trails ═══
       const sd = satDataRef.current;
-      const satInterval = spd < 300 ? 1 : spd < 3600 ? 3 : 10;
+      // Only throttle SGP4 at extreme speeds; smooth trails need every-frame updates
+      const satInterval = spd < 7200 ? 1 : 3;
       const satThisFrame = frameCount % satInterval === 0;
 
       if (sd.meshes.length > 0) {
@@ -1715,17 +1785,17 @@ export default function App() {
         const eIdx = EARTH_IDX;
         const ep = meshes[eIdx].position;
         const sc = baseScale(eIdx);
-        const eRotY = meshes[eIdx].rotation.y; // Earth's visual rotation for GMST→scene
+        const eRotY = meshes[eIdx].rotation.y;
         const baseSatSize = sc * earthSceneR * SAT_SIZE_FACTOR;
-        // When a satellite is focused, shrink all other boxes to ~2px
         const fovRad = (cam as THREE.PerspectiveCamera).fov * Math.PI / 180;
         const focTinySize = focSatIdx >= 0 ? FOCUS_OTHER_SAT_PX * cD * Math.tan(fovRad / 2) / innerHeight : 0;
 
-        // Per-satellite 3px trail width: precompute tan(fov/2)/height factor
-        const _tanHalfFov = Math.tan((cam as THREE.PerspectiveCamera).fov * Math.PI / 360);
-        const _pxFactor = 2 * _tanHalfFov / innerHeight * 1.5; // multiply by cam-to-sat distance → half-width
+        // Update trail group: ECI→scene via GMST + Earth rotation
+        const gmst = gstime(now);
+        trailGroup.position.copy(ep);
+        trailGroup.rotation.y = gmst - eRotY;
+        trailGroup.scale.setScalar(sc);
 
-        // Hide all satellites + trails when Earth is too small on screen
         const earthScreenForSats = getScreenSize(meshes[eIdx], cam, earthSceneR * sc);
         const hideAllSats = earthScreenForSats < innerHeight / cfg.satBracketHideFrac;
 
@@ -1737,16 +1807,14 @@ export default function App() {
 
           if (!groupOn || hideAllSats) {
             sm.visible = false;
-            const tr = satTrailObjects[i];
-            if (tr) tr.mesh.visible = false;
-            if (!groupOn && satTrailCenters[i]) { satTrailCenters[i]!.fill(0); }
+            if (satTrailLines[i]) satTrailLines[i]!.visible = false;
+            if (!groupOn && satTrailData[i]) { satTrailData[i]!.fill(0); satTrailReady[i] = false; }
             continue;
           }
 
           if (satFrozen[i]) {
             sm.visible = false;
-            const tr = satTrailObjects[i];
-            if (tr) tr.mesh.visible = false;
+            if (satTrailLines[i]) satTrailLines[i]!.visible = false;
             continue;
           }
 
@@ -1755,14 +1823,11 @@ export default function App() {
           const eci = getSatPositionECI(sat, now);
           if (!eci || !isFinite(eci.x) || !isFinite(eci.y) || !isFinite(eci.z)) { sm.visible = false; continue; }
 
-          // Check altitude deviation — freeze if orbit drifted
           const eciDistKm = Math.sqrt(eci.x * eci.x + eci.y * eci.y + eci.z * eci.z);
           const actualAltKm = eciDistKm - 6371;
           const expectedAlt = satExpectedAltKm[i];
           if (actualAltKm > expectedAlt * 1.5 || actualAltKm < expectedAlt / 1.5) {
-            satFrozen[i] = true;
-            sm.visible = false;
-            continue;
+            satFrozen[i] = true; sm.visible = false; continue;
           }
 
           const pos = eciToScene(eci, ep, earthSceneR, sc, now, eRotY);
@@ -1770,7 +1835,7 @@ export default function App() {
           const distFromEarth = Math.sqrt(dxE * dxE + dyE * dyE + dzE * dzE);
           if (distFromEarth < 0.001 || distFromEarth > 200 * sc) { sm.visible = false; continue; }
 
-          // Occlusion check (mesh only — trail still updates below)
+          // Occlusion (mesh only — trail emit below is independent)
           const earthR = earthSceneR * sc;
           const cex = ep.x - cam.position.x, cey = ep.y - cam.position.y, cez = ep.z - cam.position.z;
           const csx = pos.x - cam.position.x, csy = pos.y - cam.position.y, csz = pos.z - cam.position.z;
@@ -1782,18 +1847,6 @@ export default function App() {
             if (dot > 0.98 && camSatDist > camEarthDist) satOccluded = true;
           }
           sm.visible = !satOccluded;
-          if (sat.groupId === GID_STATIONS) {
-            const seed = i * 7919;
-            const jitR = earthSceneR * sc * 0.08;
-            const dxR = pos.x - ep.x, dyR = pos.y - ep.y, dzR = pos.z - ep.z;
-            const dR = Math.sqrt(dxR * dxR + dyR * dyR + dzR * dzR);
-            if (dR > 0.001) {
-              const factor = (Math.abs(Math.sin(seed)) * 0.8 + 0.2) * jitR;
-              pos.x += (dxR / dR) * factor;
-              pos.y += (dyR / dR) * factor;
-              pos.z += (dzR / dR) * factor;
-            }
-          }
           sm.position.set(pos.x, pos.y, pos.z);
 
           const isStation = sat.groupId === GID_STATIONS;
@@ -1805,40 +1858,27 @@ export default function App() {
             sm.scale.setScalar(Math.max(thisSize, isStation ? minSatSize * 2 : minSatSize));
           }
 
-          // ═══ Trail: staggered SGP4 recompute + rebuild every frame ═══
-          const centers = satTrailCenters[i];
-          const trail = satTrailObjects[i];
-          if (centers && trail && showTrails) {
+          // ═══ Trail: staggered recompute of 50% orbit in ECI coords ═══
+          const trailPositions = satTrailData[i];
+          const trailLine = satTrailLines[i];
+          if (trailPositions && trailLine && showTrails && spd <= SPEED_HIDE_UI) {
             const trailStagger = spd < 60 ? 60 : spd < 300 ? 20 : 8;
-            const lastIdx = TRAIL_N - 1;
             if (frameCount % trailStagger === (i % trailStagger)) {
-              // Full recompute: TRAIL_N SGP4 calls spanning 50% orbit
-              const sr2 = sat.satrec as any;
-              const periodSec = sr2.no ? (2 * Math.PI / sr2.no) * 60 : 5400;
-              const trailDuration = periodSec * TRAIL_ORBIT_FRACTION;
-              const nowMs = now.getTime();
-              const trailDate = new Date(nowMs);
-              for (let s = 0; s <= lastIdx; s++) {
-                trailDate.setTime(nowMs - (lastIdx - s) / lastIdx * trailDuration * 1000);
-                const pastEci = getSatPositionECI(sat, trailDate);
-                if (pastEci) {
-                  const pp = eciToScene(pastEci, ep, earthSceneR, sc, now, eRotY);
-                  centers[s * 3] = pp.x - ep.x;
-                  centers[s * 3 + 1] = pp.y - ep.y;
-                  centers[s * 3 + 2] = pp.z - ep.z;
-                }
+              if (computeTrailECI(sat, trailPositions, now)) {
+                satTrailReady[i] = true;
               }
             }
-            // Always update head to current satellite position + rebuild ribbon
-            centers[lastIdx * 3] = pos.x - ep.x;
-            centers[lastIdx * 3 + 1] = pos.y - ep.y;
-            centers[lastIdx * 3 + 2] = pos.z - ep.z;
-            const _camRel = { x: cam.position.x - ep.x, y: cam.position.y - ep.y, z: cam.position.z - ep.z };
-            trail.rebuild(centers, TRAIL_N, _camRel, _pxFactor);
-            trail.mesh.visible = true;
-            trail.mesh.position.copy(ep);
-          } else if (trail) {
-            trail.mesh.visible = false;
+            // Head = current ECI position (updated every frame)
+            const last3 = (TRAIL_N - 1) * 3;
+            trailPositions[last3] = eci.x * kmToScene;
+            trailPositions[last3 + 1] = eci.y * kmToScene;
+            trailPositions[last3 + 2] = eci.z * kmToScene;
+            trailLine.geometry.attributes.position.needsUpdate = true;
+            trailLine.visible = satTrailReady[i];
+            trailLine.geometry.setDrawRange(0, TRAIL_N);
+            (trailLine.material as THREE.ShaderMaterial).uniforms.activePoints.value = TRAIL_N;
+          } else if (trailLine) {
+            trailLine.visible = false;
           }
         }
 
@@ -1876,12 +1916,15 @@ export default function App() {
         }
       }
 
-      // Satellite orbit lines: user-toggle only (ribbon trails now work at all speeds)
+      // Satellite orbit lines: auto-show at high speed (trails hidden), auto-hide at low speed
+      const showSatOrbitsAuto = spd > SPEED_HIDE_UI;
+      if (showSatOrbitsAuto && sd.orbitLines.length === 0 && sd.sats.length > 0) {
+        computeSatOrbits();
+      }
       if (sd.orbitLines.length > 0) {
         const ep2 = meshes[EARTH_IDX].position;
         sd.orbitLines.forEach(ol => {
-          ol.visible = false; // orbit lines disabled — ribbon trails replace them
-          // Position at Earth center. NO scale — positions already scaled in computeSatOrbits
+          ol.visible = showSatOrbitsAuto;
           if (ol.visible) ol.position.copy(ep2);
           const olm = (ol as any).material;
           if (olm) olm.opacity = cfg.satOrbitOpacity;
@@ -2159,6 +2202,8 @@ export default function App() {
       if (elapsed >= introMinTime && satDataLoaded) {
         introRef.current?.classList.add('gone');
         setTimeout(() => { if (earthStartIdx >= 0) focusObj(earthStartIdx); }, 200);
+        // Show UI after Earth zoom-in completes (~1.5s after intro fades)
+        setTimeout(() => setIntroDone(true), 1500);
       } else {
         // Update progress text
         const prog = document.getElementById('__introProgress');
@@ -2223,7 +2268,14 @@ export default function App() {
 
       <div ref={canvasRef} />
 
-      <div className="chrome-top">
+      {uiHidden && introDone && <button
+        className="layer-btn"
+        onClick={() => setUiHidden(false)}
+        title="显示界面"
+        style={{ position: 'fixed', top: 20, right: 24, zIndex: 9999 }}
+      ><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></button>}
+
+      <div className="chrome-top" style={uiHidden || !introDone ? { display: 'none' } : undefined}>
         <div className="brand">
           <div className="brand-en">Open Globes</div>
           <div className="brand-cn">此刻太空</div>
@@ -2232,10 +2284,11 @@ export default function App() {
           <button className="layer-btn mobile-only" onClick={() => { closeAllPanels('mobileNav'); setMobileNavOpen(v => !v); }}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>星体</button>
           <button className={`layer-btn ${satListOpen ? 'on' : ''}`} ref={lSatRef} onClick={() => { if (!satListOpen) closeAllPanels('sat'); setSatListOpen(v => !v); }}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49M7.76 16.24a6 6 0 0 1 0-8.49"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 19.07a10 10 0 0 1 0-14.14"/></svg>卫星</button>
           <button className="layer-btn" onClick={() => { if (!mobileSettingsOpen) closeAllPanels('mobileSettings'); setMobileSettingsOpen(v => !v); }}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>设置</button>
+          <button className="layer-btn" onClick={() => setUiHidden(true)} title="隐藏界面"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg></button>
         </div>
       </div>
 
-      <div className="nav" ref={navRef} />
+      <div className="nav" ref={navRef} style={uiHidden || !introDone ? { display: 'none' } : undefined} />
 
       {/* Info hint icon — DOM-driven visibility (avoids React re-render on every planet click) */}
       <button className="info-hint" ref={infoHintRef} style={{ display: 'none' }} onClick={() => (window as any).__openInfo()}>
@@ -2244,7 +2297,7 @@ export default function App() {
         </svg>
       </button>
 
-      <div className="info" ref={infoRef}>
+      <div className="info" ref={infoRef} style={uiHidden || !introDone ? { display: 'none' } : undefined}>
         <div className="info-drag" onPointerDown={(e) => {
           e.preventDefault();
           const el = infoRef.current!;
@@ -2285,7 +2338,7 @@ export default function App() {
         <div ref={iExtrasRef} />
       </div>
 
-      <div className="timebar">
+      <div className="timebar" style={uiHidden || !introDone ? { display: 'none' } : undefined}>
         <button className="tb on" ref={playBtnRef} onClick={() => (window as any).__togglePlay()}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="6" y1="4" x2="6" y2="20"/><line x1="18" y1="4" x2="18" y2="20"/></svg></button>
         <button className="tb" onClick={() => (window as any).__changeSpd(-1)}><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><line x1="5" y1="12" x2="19" y2="12"/></svg></button>
         <div className="tspeed" ref={spdTxtRef} style={{ minWidth: 60, textAlign: 'center' }}>1分/秒</div>
@@ -2432,11 +2485,11 @@ export default function App() {
 
       <div className="tip" ref={tipRef} />
       {/* Labels integrated into helper system — no separate labels div */}
-      <div ref={satBracketsRef} />
-      <div ref={helpersRef} />
+      <div ref={satBracketsRef} style={uiHidden || !introDone ? { display: 'none' } : undefined} />
+      <div ref={helpersRef} style={uiHidden || !introDone ? { display: 'none' } : undefined} />
 
       {/* Mobile nav panel — slide from left */}
-      <div className={`mobile-nav-panel ${mobileNavOpen ? 'open' : ''}`}>
+      <div className={`mobile-nav-panel ${mobileNavOpen ? 'open' : ''}`} style={uiHidden || !introDone ? { display: 'none' } : undefined}>
         <div className="mobile-section-title">太阳系</div>
         {PLANETS.map((p, i) => {
           const moons = NATURAL_MOONS.filter(nm => nm.parentId === p.id);
