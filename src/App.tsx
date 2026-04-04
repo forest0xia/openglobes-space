@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { PLANETS } from './data/planets';
 import { NATURAL_MOONS, MOON_COUNTS } from './data/moons';
 import { PROBES } from './data/probesMeta';
-import { fetchAllSatellites, fetchStarlinkSatellites, getSatPositionECI, eciToScene, SAT_GROUPS, type SatRecord, gstime } from './services/celestrak';
+import { fetchAllSatellites, fetchStarlinkSatellites, fetchDebrisSatellites, getSatPositionECI, eciToScene, SAT_GROUPS, type SatRecord, gstime } from './services/celestrak';
 import { createSatelliteModel } from './utils/satModel'; // only used for focused satellite detail model
 import { createProbeModel } from './utils/probeModels';
 import { createTrailLine, TRAIL_N } from './utils/SatTrail';
@@ -18,6 +18,7 @@ import { CfgStepper, VolStepper, CfgToggle } from './components/Controls';
 // ═══ Module-level constants (accessible in both useEffect and JSX) ═══
 const GID_STARLINK = 'starlink';
 const GID_STATIONS = 'stations';
+const GID_DEBRIS = 'debris';
 
 export default function App() {
   const canvasRef = useRef<HTMLDivElement>(null);
@@ -63,16 +64,20 @@ export default function App() {
   const [starlinkLoading, setStarlinkLoading] = useState(false);
   const [starlinkProgress, setStarlinkProgress] = useState(0);
   const [starlinkTotal, setStarlinkTotal] = useState(0);
+  const [debrisLoading, setDebrisLoading] = useState(false);
+  const [debrisProgress, setDebrisProgress] = useState(0);
+  const [debrisTotal, setDebrisTotal] = useState(0);
   const [probesVisible, setProbesVisible] = useState(false);
   const [satellites, setSatellites] = useState<SatRecord[]>([]);
-  const [satGroups, setSatGroups] = useState<Record<string, boolean>>({ beidou: true, weather: true, stations: false, starlink: false, gps: false, visual: false, resource: false, science: false, geodetic: false });
+  const [satGroups, setSatGroups] = useState<Record<string, boolean>>({ beidou: true, weather: true, stations: false, starlink: false, gps: false, visual: false, resource: false, science: false, geodetic: false, debris: false });
 
   // Store refs accessible from inside useEffect
   const satDataRef = useRef<{
     sats: SatRecord[]; meshes: (THREE.Mesh | null)[]; groups: Record<string, boolean>;
     orbitLines: THREE.Line[];
     starlinkMesh?: THREE.InstancedMesh; starlinkSats?: SatRecord[]; starlinkPositions?: Float32Array;
-  }>({ sats: [], meshes: [], groups: { beidou: true, weather: true, stations: false, starlink: false, gps: false, visual: false, resource: false, science: false, geodetic: false }, orbitLines: [] });
+    debrisMesh?: THREE.InstancedMesh; debrisSats?: SatRecord[]; debrisPositions?: Float32Array;
+  }>({ sats: [], meshes: [], groups: { beidou: true, weather: true, stations: false, starlink: false, gps: false, visual: false, resource: false, science: false, geodetic: false, debris: false }, orbitLines: [] });
 
   useEffect(() => {
     // ═══ SHARED CONSTANTS — single source of truth for thresholds ═══
@@ -82,6 +87,8 @@ export default function App() {
     const STATION_SCALE = 3;           // stations are this × bigger than regular sats
     const STARLINK_DOT_FACTOR = 0.002; // Starlink instance size relative to Earth
     const STARLINK_LIST_PREVIEW = 25;  // how many Starlink shown in sidebar list
+    const DEBRIS_DOT_FACTOR = 0.0015;  // Debris instance size relative to Earth (smaller than Starlink)
+    const DEBRIS_LIST_PREVIEW = 25;    // how many debris shown in sidebar list
     const SPEED_HIDE_UI = 1800;        // spd > this: hide sat labels/brackets
     // SOLAR_SYSTEM_SCALE removed — use SUN_HIDE_PX for consistent galaxy-scale detection
     const KEPLER_ITERATIONS = 5;       // Newton's method iterations for Kepler eq
@@ -743,6 +750,20 @@ export default function App() {
       sd.starlinkPositions = undefined;
     }
 
+    // Dispose Debris InstancedMesh resources
+    function disposeDebris() {
+      const sd = satDataRef.current;
+      if (sd.debrisMesh) {
+        scene.remove(sd.debrisMesh);
+        sd.debrisMesh.geometry.dispose();
+        (sd.debrisMesh.material as THREE.Material).dispose();
+        sd.debrisMesh.dispose();
+        sd.debrisMesh = undefined;
+      }
+      sd.debrisSats = undefined;
+      sd.debrisPositions = undefined;
+    }
+
     // Toggle satellite group visibility
     (window as any).__toggleSatGroup = async (gid: string) => {
       const g = satDataRef.current.groups;
@@ -823,6 +844,75 @@ export default function App() {
           setSatellites(prev => prev.filter(s => s.groupId !== GID_STARLINK));
         } else if (satDataRef.current.starlinkMesh) {
           satDataRef.current.starlinkMesh.visible = true;
+        }
+      }
+
+      // Debris: on-demand load with InstancedMesh (same pattern as Starlink)
+      if (gid === GID_DEBRIS && g[gid] && !satDataRef.current.debrisMesh) {
+        setDebrisLoading(true);
+        setDebrisProgress(0);
+        const newDebris = await fetchDebrisSatellites();
+        setDebrisProgress(70);
+        setDebrisTotal(newDebris.length);
+
+        const dbCount = newDebris.length;
+        const dbPositions = new Float32Array(dbCount * 3);
+        const earthVisR = baseScale(EARTH_IDX) * earthSceneR;
+        const dbDotR = earthVisR * DEBRIS_DOT_FACTOR;
+        const dbGeo = new THREE.BoxGeometry(dbDotR * 2, dbDotR * 2, dbDotR * 2);
+        const dbMat = new THREE.MeshBasicMaterial({ color: 0xEF4444 });
+        const dbMesh = new THREE.InstancedMesh(dbGeo, dbMat, dbCount);
+        dbMesh.frustumCulled = false;
+        dbMesh.visible = false;
+        scene.add(dbMesh);
+
+        const tmpMat = new THREE.Matrix4();
+        setDebrisProgress(70);
+        const initNow = new Date();
+        const epDB = meshes[EARTH_IDX].position;
+        const scDB = baseScale(EARTH_IDX);
+        for (let di = 0; di < dbCount; di++) {
+          const dbEci = getSatPositionECI(newDebris[di], initNow);
+          if (dbEci && isFinite(dbEci.x) && isFinite(dbEci.y) && isFinite(dbEci.z)) {
+            const dbP = eciToScene(dbEci, epDB, earthSceneR, scDB, initNow, meshes[EARTH_IDX].rotation.y);
+            const rx = dbP.x - epDB.x, ry = dbP.y - epDB.y, rz = dbP.z - epDB.z;
+            dbPositions[di * 3] = rx;
+            dbPositions[di * 3 + 1] = ry;
+            dbPositions[di * 3 + 2] = rz;
+            tmpMat.makeTranslation(rx, ry, rz);
+          } else {
+            tmpMat.makeTranslation(0, 0, 0);
+          }
+          dbMesh.setMatrixAt(di, tmpMat);
+          if (di % 200 === 0) {
+            setDebrisProgress(70 + Math.round((di / dbCount) * 30));
+            await new Promise(r => setTimeout(r, 0));
+          }
+        }
+        dbMesh.instanceMatrix.needsUpdate = true;
+        dbMesh.visible = true;
+
+        satDataRef.current.debrisMesh = dbMesh;
+        satDataRef.current.debrisSats = newDebris;
+        satDataRef.current.debrisPositions = dbPositions;
+
+        setSatellites(prev => {
+          const withoutDb = prev.filter(s => s.groupId !== GID_DEBRIS);
+          return [...withoutDb, ...newDebris.slice(0, DEBRIS_LIST_PREVIEW).map(s => ({ ...s, groupId: 'debris' }))];
+        });
+        if (satCountRef.current) satCountRef.current.textContent = `${satDataRef.current.sats.length + (satDataRef.current.starlinkSats?.length || 0) + dbCount} 颗卫星追踪中`;
+        setDebrisProgress(100);
+        setDebrisLoading(false);
+        return;
+      }
+
+      // Debris: dispose on off, show on on
+      if (gid === GID_DEBRIS) {
+        if (!g[gid]) {
+          disposeDebris();
+          setSatellites(prev => prev.filter(s => s.groupId !== GID_DEBRIS));
+        } else if (satDataRef.current.debrisMesh) {
+          satDataRef.current.debrisMesh.visible = true;
         }
       }
 
@@ -1944,6 +2034,34 @@ export default function App() {
           slMesh.position.copy(ep);
           slMesh.instanceMatrix.needsUpdate = true;
         }
+
+        // ═══ Debris InstancedMesh positions (single draw call, batched) ═══
+        if (sd.debrisMesh) {
+          const dbGroupOn = sd.groups[GID_DEBRIS] ?? false;
+          sd.debrisMesh.visible = dbGroupOn && !hideAllSats;
+        }
+        if (sd.debrisMesh?.visible && satThisFrame && sd.debrisSats && sd.debrisPositions) {
+          const dbSats = sd.debrisSats;
+          const dbPos = sd.debrisPositions;
+          const dbMesh = sd.debrisMesh;
+          const dbBatch = spd < 300 ? 500 : spd < 3600 ? 200 : 100;
+          const dbStart = (frameCount * dbBatch) % dbSats.length;
+          const dbEnd = Math.min(dbStart + dbBatch, dbSats.length);
+          for (let di = dbStart; di < dbEnd; di++) {
+            const dbEci = getSatPositionECI(dbSats[di], now);
+            if (dbEci && isFinite(dbEci.x)) {
+              const dbP = eciToScene(dbEci, ep, earthSceneR, sc, now, eRotY);
+              const rx = dbP.x - ep.x, ry = dbP.y - ep.y, rz = dbP.z - ep.z;
+              dbPos[di * 3] = rx; dbPos[di * 3 + 1] = ry; dbPos[di * 3 + 2] = rz;
+              _slTmpMat.makeTranslation(rx, ry, rz);
+            } else {
+              _slTmpMat.makeTranslation(dbPos[di * 3], dbPos[di * 3 + 1], dbPos[di * 3 + 2]);
+            }
+            dbMesh.setMatrixAt(di, _slTmpMat);
+          }
+          dbMesh.position.copy(ep);
+          dbMesh.instanceMatrix.needsUpdate = true;
+        }
       }
 
       // Satellite orbit lines: auto-show at high speed (trails hidden), auto-hide at low speed
@@ -2252,6 +2370,7 @@ export default function App() {
       // Dispose all satellite resources
       for (let i = 0; i < satMeshes.length; i++) dematerializeSat(i);
       disposeStarlink();
+      disposeDebris();
       // Dispose satellite orbit lines
       satDataRef.current.orbitLines.forEach(ol => { scene.remove(ol); ol.geometry.dispose(); (ol.material as THREE.Material).dispose(); });
       // Dispose planet meshes, materials, textures
@@ -2404,7 +2523,7 @@ export default function App() {
           <div className="sat-layout">
             <div className="sat-sidebar">
               <div className="sat-col-title">分类</div>
-              {['beidou', 'weather', 'stations', 'starlink', 'gps', 'probes', 'science', 'resource', 'geodetic', 'visual'].map(tid => {
+              {['beidou', 'weather', 'stations', 'starlink', 'gps', 'probes', 'debris', 'science', 'resource', 'geodetic', 'visual'].map(tid => {
                 if (tid === 'probes') return (
                   <button key="probes" className={`sat-tab ${satTab === 'probes' ? 'active' : ''}`} onClick={() => setSatTab('probes')}>
                     <span className="sat-tab-row"><span className={`sat-tab-dot ${probesVisible ? '' : 'off'}`} style={{ background: 'linear-gradient(135deg, #81C784, #CE93D8, #FFB74D)' }} />探测器</span>
@@ -2416,7 +2535,7 @@ export default function App() {
                 return (
                   <button key={g.id} className={`sat-tab ${satTab === g.id ? 'active' : ''}`} onClick={() => setSatTab(g.id)}>
                     <span className="sat-tab-row"><span className={`sat-tab-dot ${satGroups[g.id] ? '' : 'off'}`} style={{ background: g.color }} />{g.labelCn}</span>
-                    <span className="sat-tab-count">{g.id === GID_STARLINK ? (starlinkTotal || satellites.filter(s => s.groupId === g.id).length) : satellites.filter(s => s.groupId === g.id).length} 颗</span>
+                    <span className="sat-tab-count">{g.id === GID_STARLINK ? (starlinkTotal || satellites.filter(s => s.groupId === g.id).length) : g.id === GID_DEBRIS ? (debrisTotal || satellites.filter(s => s.groupId === g.id).length) : satellites.filter(s => s.groupId === g.id).length} 颗</span>
                   </button>
                 );
               })}
@@ -2457,6 +2576,7 @@ export default function App() {
                   resource: '地球资源与对地观测卫星。包括Landsat、Sentinel、高分等系列，多在LEO太阳同步轨道。',
                   science: '科学研究卫星。包括哈勃、费米伽马射线等空间望远镜和科学实验平台。',
                   geodetic: '大地测量卫星。用于精密定位、地球重力场测量和地壳运动监测。',
+                  debris: `被追踪的太空垃圾碎片，来源于多次重大碰撞/反卫星试验事件：风云1C（1999）、宇宙2251/铱星33碰撞（2009）、宇宙1408（2021）、印度反卫星试验（2019）。共${debrisTotal || '约7,000'}个碎片通过 InstancedMesh 渲染。凯斯勒综合征的直观展示。`,
                 };
                 const refs: Record<string, string> = {
                   beidou: '数据来源：CelesTrak · celestrak.org',
@@ -2468,6 +2588,7 @@ export default function App() {
                   resource: '数据来源：CelesTrak · Earth Resources',
                   science: '数据来源：CelesTrak · Science',
                   geodetic: '数据来源：CelesTrak · Geodetic',
+                  debris: '数据来源：CelesTrak · 风云1C / Cosmos 2251 / Iridium 33 / Cosmos 1408 / Indian ASAT',
                 };
                 const groupSats = satellites.filter(s => s.groupId === g.id);
                 return (<>
@@ -2490,23 +2611,34 @@ export default function App() {
                       </div>
                     </div>
                   )}
+                  {/* Debris progress bar */}
+                  {g.id === GID_DEBRIS && debrisLoading && (
+                    <div style={{ marginBottom: 8 }}>
+                      <div style={{ fontSize: 10, color: 'var(--text-dim)', marginBottom: 4 }}>加载太空垃圾数据... {debrisProgress}%</div>
+                      <div style={{ width: '100%', height: 3, background: 'rgba(94,234,212,0.1)', borderRadius: 2 }}>
+                        <div style={{ width: `${debrisProgress}%`, height: '100%', background: '#EF4444', borderRadius: 2, transition: 'width .3s' }} />
+                      </div>
+                    </div>
+                  )}
                   <div className="sat-content-divider" />
                   <div style={{ fontSize: 9, color: 'var(--text-dim)', marginBottom: 4 }}>
                     {g.id === GID_STARLINK && starlinkTotal > 0
                       ? `预览 · 共 ${starlinkTotal} 颗通过 InstancedMesh 渲染`
+                      : g.id === GID_DEBRIS && debrisTotal > 0
+                      ? `预览 · 共 ${debrisTotal} 个碎片通过 InstancedMesh 渲染`
                       : `列表 · ${groupSats.length} 颗`}
                   </div>
                   <div className="sat-list">
                     {groupSats.length > 0 ? groupSats.map((s, li) => {
-                      const isStarlink = g.id === GID_STARLINK;
-                      const realIdx = isStarlink ? -1 : satellites.indexOf(s);
+                      const isInstancedGroup = g.id === GID_STARLINK || g.id === GID_DEBRIS;
+                      const realIdx = isInstancedGroup ? -1 : satellites.indexOf(s);
                       return (
                         <div key={li} className="sat-item" title="" onClick={() => { if (realIdx >= 0) (window as any).__focusSat(realIdx); }}>
                           <span className="sat-dot" style={{ background: s.color }} />
                           <span className="sat-name" title="">{getSatDisplayName(s.name, s.noradId)}</span>
                         </div>
                       );
-                    }) : (g.id === GID_STARLINK && !starlinkLoading ? <div className="sat-loading" style={{ fontSize: 10 }}>启用后加载全部正常运行的卫星</div> : <div className="sat-loading">加载中...</div>)}
+                    }) : (g.id === GID_STARLINK && !starlinkLoading ? <div className="sat-loading" style={{ fontSize: 10 }}>启用后加载全部正常运行的卫星</div> : g.id === GID_DEBRIS && !debrisLoading ? <div className="sat-loading" style={{ fontSize: 10 }}>启用后加载被追踪的太空垃圾碎片</div> : <div className="sat-loading">加载中...</div>)}
                   </div>
                 </>);
               })()}

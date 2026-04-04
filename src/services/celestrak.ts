@@ -30,6 +30,7 @@ export const SAT_GROUPS: SatGroup[] = [
   { id: 'resource', label: 'Earth Resources', labelCn: '地球资源', color: '#84CC16' },
   { id: 'geodetic', label: 'Geodetic', labelCn: '大地测量', color: '#FB923C' },
   { id: 'visual', label: 'Brightest', labelCn: '明亮卫星', color: '#10B981' },
+  { id: 'debris', label: 'Space Debris', labelCn: '太空垃圾', color: '#EF4444' },
 ];
 
 export interface SatRecord {
@@ -231,6 +232,56 @@ export async function fetchStarlinkSatellites(): Promise<SatRecord[]> {
   }
   const dbgCatchCount = data.length - records.length - dbgTleFail - dbgSgpFail - dbgNanFail - dbgAltFail;
   console.log(`[Starlink] ${data.length} raw → ${records.length} active (300-800km) | tleFail:${dbgTleFail} sgpFail:${dbgSgpFail} nanFail:${dbgNanFail} altFail:${dbgAltFail} caught:${dbgCatchCount}`);
+  return records;
+}
+
+/**
+ * Load space debris from static cache.
+ * Combines multiple debris event groups into one unified "debris" group.
+ * Uses a dedicated parser that does NOT filter by JUNK_PATTERNS.
+ */
+export async function fetchDebrisSatellites(): Promise<SatRecord[]> {
+  const cache = await loadCache();
+  if (!cache) return [];
+  const debrisGroupIds = ['debris-fengyun', 'debris-cosmos', 'debris-iridium', 'debris-cosmos1408', 'debris-indian'];
+  const color = SAT_GROUPS.find(g => g.id === 'debris')?.color || '#EF4444';
+  const records: SatRecord[] = [];
+  const seenNoradIds = new Set<number>();
+  const now = new Date();
+
+  for (const dgId of debrisGroupIds) {
+    const data = cache.groups[dgId] || [];
+    for (const item of data) {
+      try {
+        const noradId = item.NORAD_CAT_ID || 0;
+        if (noradId && seenNoradIds.has(noradId)) continue;
+        let line1 = item.TLE_LINE1;
+        let line2 = item.TLE_LINE2;
+        if (!line1 || !line2) {
+          const tle = ommToTLE(item);
+          if (!tle) continue;
+          [line1, line2] = tle;
+        }
+        const satrec = twoline2satrec(line1, line2);
+        const pv = propagate(satrec, now);
+        if (typeof pv.position === 'boolean' || !pv.position) continue;
+        const p = pv.position as EciVec3<number>;
+        if (!isFinite(p.x) || !isFinite(p.y) || !isFinite(p.z)) continue;
+        const dist = Math.sqrt(p.x * p.x + p.y * p.y + p.z * p.z);
+        if (dist < 100 || dist > 500000) continue;
+        if (noradId) seenNoradIds.add(noradId);
+        records.push({
+          name: (item.OBJECT_NAME || '').trim(),
+          groupId: 'debris',
+          color,
+          satrec,
+          noradId,
+        });
+      } catch { /* skip */ }
+    }
+  }
+
+  console.log(`[Debris] ${debrisGroupIds.map(id => (cache.groups[id] || []).length).reduce((a, b) => a + b, 0)} raw → ${records.length} tracked debris objects`);
   return records;
 }
 
