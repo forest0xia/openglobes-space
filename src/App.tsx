@@ -786,8 +786,9 @@ export default function App() {
         // At fit distance, 1px ≈ earthVisR * 2 / screenH. So 3px ≈ earthVisR * 0.006.
         const earthVisR = baseScale(EARTH_IDX) * earthSceneR;
         const slDotR = earthVisR * STARLINK_DOT_FACTOR;
-        const slGeo = new THREE.BoxGeometry(slDotR * 2, slDotR * 2, slDotR * 2); // 12 triangles, efficient
-        const slMat = new THREE.MeshBasicMaterial({ color: 0x8B5CF6 });
+        // Flat panel shape: wider and thinner than a cube, more recognizable as satellite
+        const slGeo = new THREE.BoxGeometry(slDotR * 3, slDotR * 0.4, slDotR * 2);
+        const slMat = new THREE.MeshStandardMaterial({ color: 0x8B5CF6, metalness: 0.6, roughness: 0.3, emissive: new THREE.Color(0x4a2e8a), emissiveIntensity: 0.5 });
         const slMesh = new THREE.InstancedMesh(slGeo, slMat, slCount);
         slMesh.frustumCulled = false;
         slMesh.visible = false;
@@ -859,8 +860,9 @@ export default function App() {
         const dbPositions = new Float32Array(dbCount * 3);
         const earthVisR = baseScale(EARTH_IDX) * earthSceneR;
         const dbDotR = earthVisR * DEBRIS_DOT_FACTOR;
-        const dbGeo = new THREE.BoxGeometry(dbDotR * 2, dbDotR * 2, dbDotR * 2);
-        const dbMat = new THREE.MeshBasicMaterial({ color: 0xEF4444 });
+        // Irregular tetrahedron shape: looks like a tumbling fragment at any scale
+        const dbGeo = new THREE.TetrahedronGeometry(dbDotR * 1.5);
+        const dbMat = new THREE.MeshStandardMaterial({ color: 0xEF4444, metalness: 0.5, roughness: 0.6, emissive: new THREE.Color(0x881111), emissiveIntensity: 0.5 });
         const dbMesh = new THREE.InstancedMesh(dbGeo, dbMat, dbCount);
         dbMesh.frustumCulled = false;
         dbMesh.visible = false;
