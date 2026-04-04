@@ -251,6 +251,141 @@ export default function App() {
       (deepSpaceSphere.material as THREE.MeshBasicMaterial).needsUpdate = true;
     });
 
+    // ═══════ ASTEROID BELT ═══════
+    // Between Mars (~30.48) and Jupiter (~104.1), centered around ~67 scene units (~3.35 AU)
+    const BELT_COUNT = 5000;
+    const BELT_INNER = 44;   // ~2.2 AU
+    const BELT_OUTER = 66;   // ~3.3 AU
+    const beltGeo = new THREE.TetrahedronGeometry(0.08);
+    const beltMat = new THREE.MeshStandardMaterial({ color: 0x888877, metalness: 0.4, roughness: 0.8, emissive: new THREE.Color(0x222211), emissiveIntensity: 0.3 });
+    const beltMesh = new THREE.InstancedMesh(beltGeo, beltMat, BELT_COUNT);
+    beltMesh.frustumCulled = false;
+    const beltTmpMat = new THREE.Matrix4();
+    const beltTmpQ = new THREE.Quaternion();
+    const beltAngles = new Float32Array(BELT_COUNT);    // orbital angles
+    const beltRadii = new Float32Array(BELT_COUNT);     // orbital radii
+    const beltSpeeds = new Float32Array(BELT_COUNT);    // angular speeds
+    const beltYOffsets = new Float32Array(BELT_COUNT);   // vertical offsets
+    for (let bi = 0; bi < BELT_COUNT; bi++) {
+      const r = BELT_INNER + Math.random() * (BELT_OUTER - BELT_INNER);
+      // Kirkwood gaps: reduce density at specific radii (resonances with Jupiter)
+      const normalR = (r - BELT_INNER) / (BELT_OUTER - BELT_INNER);
+      if ((normalR > 0.3 && normalR < 0.35) || (normalR > 0.55 && normalR < 0.6)) {
+        // Push away from gaps
+        beltRadii[bi] = r + (Math.random() > 0.5 ? 2 : -2);
+      } else {
+        beltRadii[bi] = r;
+      }
+      beltAngles[bi] = Math.random() * Math.PI * 2;
+      beltSpeeds[bi] = (0.08 + Math.random() * 0.02) / Math.sqrt(r / 20); // Kepler's 3rd law
+      beltYOffsets[bi] = (Math.random() - 0.5) * 3 * (r / BELT_OUTER); // vertical spread
+      const scale = 0.3 + Math.random() * 1.5;
+      beltTmpQ.setFromEuler(new THREE.Euler(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI));
+      beltTmpMat.compose(
+        new THREE.Vector3(
+          Math.cos(beltAngles[bi]) * beltRadii[bi],
+          beltYOffsets[bi],
+          Math.sin(beltAngles[bi]) * beltRadii[bi]
+        ),
+        beltTmpQ,
+        new THREE.Vector3(scale, scale, scale)
+      );
+      beltMesh.setMatrixAt(bi, beltTmpMat);
+    }
+    beltMesh.instanceMatrix.needsUpdate = true;
+    scene.add(beltMesh);
+
+    // ═══════ LAGRANGE POINTS (Sun-Earth L1-L5) ═══════
+    const lagrangeMarkers: THREE.Mesh[] = [];
+    const lagrangeLabels = ['L1', 'L2', 'L3', 'L4', 'L5'];
+    const lagrangeColors = [0x00CCFF, 0x00CCFF, 0x00CCFF, 0x66FF66, 0x66FF66];
+    for (let li = 0; li < 5; li++) {
+      const lMesh = new THREE.Mesh(
+        new THREE.OctahedronGeometry(0.15, 0),
+        new THREE.MeshStandardMaterial({
+          color: lagrangeColors[li], metalness: 0.5, roughness: 0.3,
+          emissive: new THREE.Color(lagrangeColors[li]), emissiveIntensity: 0.6,
+          transparent: true, opacity: 0.8,
+        })
+      );
+      lMesh.visible = false;
+      scene.add(lMesh);
+      lagrangeMarkers.push(lMesh);
+    }
+
+    // ═══════ FAMOUS STARS (at galaxy scale) ═══════
+    // Position relative to Sun. 1 ly ≈ 155,860 scene units (compressed galaxy scale)
+    // We use MW_SIZE-relative coords to place them on the Milky Way plane
+    const FAMOUS_STARS = [
+      { name: '比邻星', nameEn: 'Proxima Centauri', dist: 4.24, ra: 217.4, dec: -62.7, spectral: 'M5.5V', color: 0xFF6644, mag: 11.1 },
+      { name: '天狼星', nameEn: 'Sirius', dist: 8.6, ra: 101.3, dec: -16.7, spectral: 'A1V', color: 0xAABBFF, mag: -1.46 },
+      { name: '织女星', nameEn: 'Vega', dist: 25.0, ra: 279.2, dec: 38.8, spectral: 'A0V', color: 0xCCDDFF, mag: 0.03 },
+      { name: '北极星', nameEn: 'Polaris', dist: 433, ra: 37.9, dec: 89.3, spectral: 'F7Ib', color: 0xFFEEAA, mag: 1.98 },
+      { name: '参宿四', nameEn: 'Betelgeuse', dist: 700, ra: 88.8, dec: 7.4, spectral: 'M1Ia', color: 0xFF4422, mag: 0.42 },
+      { name: '参宿七', nameEn: 'Rigel', dist: 860, ra: 78.6, dec: -8.2, spectral: 'B8Ia', color: 0x99BBFF, mag: 0.13 },
+      { name: '大角星', nameEn: 'Arcturus', dist: 37, ra: 213.9, dec: 19.2, spectral: 'K1.5III', color: 0xFFAA44, mag: -0.05 },
+      { name: '天津四', nameEn: 'Deneb', dist: 2615, ra: 310.4, dec: 45.3, spectral: 'A2Ia', color: 0xDDEEFF, mag: 1.25 },
+      { name: '心宿二', nameEn: 'Antares', dist: 550, ra: 247.4, dec: -26.4, spectral: 'M1Ib', color: 0xFF3311, mag: 0.96 },
+      { name: '五车二', nameEn: 'Capella', dist: 43, ra: 79.2, dec: 46.0, spectral: 'G8III', color: 0xFFDD66, mag: 0.08 },
+    ];
+    const starMarkerGroup = new THREE.Group();
+    const LY_TO_SCENE = 200; // compressed: real would be 155,860 but we compress to fit MW_SIZE
+    FAMOUS_STARS.forEach(star => {
+      // Convert RA/Dec to 3D position relative to Sun
+      const raRad = star.ra * Math.PI / 180;
+      const decRad = star.dec * Math.PI / 180;
+      const d = Math.min(star.dist * LY_TO_SCENE, MW_SIZE * 0.4); // cap at 40% MW size
+      const x = d * Math.cos(decRad) * Math.cos(raRad);
+      const y = d * Math.sin(decRad);
+      const z = d * Math.cos(decRad) * Math.sin(raRad);
+      // Star sphere
+      const starSize = Math.max(5, 40 - star.mag * 8); // brighter = larger
+      const sMesh = new THREE.Mesh(
+        new THREE.SphereGeometry(starSize, 8, 8),
+        new THREE.MeshBasicMaterial({ color: star.color })
+      );
+      sMesh.position.set(x, y, z);
+      sMesh.userData = { starData: star };
+      starMarkerGroup.add(sMesh);
+      // Glow sprite
+      const glowMat = new THREE.SpriteMaterial({
+        color: star.color, transparent: true, opacity: 0.4,
+        blending: THREE.AdditiveBlending,
+      });
+      const glow = new THREE.Sprite(glowMat);
+      glow.scale.setScalar(starSize * 4);
+      glow.position.copy(sMesh.position);
+      starMarkerGroup.add(glow);
+    });
+    starMarkerGroup.visible = false;
+    scene.add(starMarkerGroup);
+
+    // ═══════ OORT CLOUD ═══════
+    // Oort Cloud: spherical shell from ~2,000 AU to ~50,000 AU
+    // In scene units: 2000 AU = 40,000 su, 50,000 AU = 1,000,000 su
+    // We compress it to fit within the rendering range
+    const OORT_COUNT = 3000;
+    const OORT_INNER = 8000;   // compressed inner boundary
+    const OORT_OUTER = 60000;  // compressed outer boundary
+    const oortGeo = new THREE.BufferGeometry();
+    const oortPos = new Float32Array(OORT_COUNT * 3);
+    for (let oi = 0; oi < OORT_COUNT; oi++) {
+      const r = OORT_INNER + Math.pow(Math.random(), 0.5) * (OORT_OUTER - OORT_INNER); // denser at inner edge
+      const theta = Math.random() * Math.PI * 2;
+      const phi = Math.acos(2 * Math.random() - 1); // uniform sphere distribution
+      oortPos[oi * 3] = r * Math.sin(phi) * Math.cos(theta);
+      oortPos[oi * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
+      oortPos[oi * 3 + 2] = r * Math.cos(phi);
+    }
+    oortGeo.setAttribute('position', new THREE.BufferAttribute(oortPos, 3));
+    const oortMat = new THREE.PointsMaterial({
+      color: 0x8899AA, size: 15, sizeAttenuation: true,
+      transparent: true, opacity: 0, blending: THREE.AdditiveBlending,
+    });
+    const oortCloud = new THREE.Points(oortGeo, oortMat);
+    oortCloud.visible = false;
+    scene.add(oortCloud);
+
     // ═══════ LOAD TEXTURE WITH FALLBACK ═══════
     function loadTex(id: string, col: number, type: 'sun' | 'gas' | 'rock'): THREE.Texture {
       const fallback = procTex(col, type);
@@ -1430,6 +1565,9 @@ export default function App() {
       earth: [100.464, 35999.372], mars: [355.453, 19140.300],
       jupiter: [34.351, 3034.906], saturn: [50.077, 1222.114],
       uranus: [314.055, 428.467], neptune: [304.349, 218.486],
+      // Dwarf planets — mean longitude at J2000 and rate (deg/century)
+      ceres: [153.332, 7816.137], pluto: [238.929, 1453.060],
+      haumea: [198.07, 1271.50], makemake: [84.50, 1176.20], eris: [35.87, 643.30],
     };
     // Julian centuries since J2000 (2000-01-01 12:00 TT)
     const J2000 = Date.UTC(2000, 0, 1, 12, 0, 0);
@@ -1654,6 +1792,46 @@ export default function App() {
         color: col,
         onClick: () => (window as any).__focusProbeByIdx(i),
         name: pr.cn, type: 'probe', parentIdx,
+      });
+    });
+
+    // Create DOM labels for famous stars (galaxy scale only, separate from planet helpers)
+    const starLabelEls: HTMLDivElement[] = [];
+    const starLabelVec = new THREE.Vector3();
+    FAMOUS_STARS.forEach(star => {
+      const el = document.createElement('div');
+      el.className = 'obj-helper-name';
+      el.textContent = `${star.name} (${star.nameEn})`;
+      el.style.color = '#' + star.color.toString(16).padStart(6, '0');
+      el.style.position = 'absolute';
+      el.style.pointerEvents = 'none';
+      el.style.display = 'none';
+      el.style.fontSize = '10px';
+      el.style.textShadow = '0 0 6px rgba(0,0,0,0.8)';
+      el.style.whiteSpace = 'nowrap';
+      helperContainer.appendChild(el);
+      starLabelEls.push(el);
+    });
+
+    // Create helpers for Lagrange points
+    lagrangeLabels.forEach((label, li) => {
+      const col = '#' + lagrangeColors[li].toString(16).padStart(6, '0');
+      const el = document.createElement('div');
+      el.className = 'obj-helper';
+      el.style.borderColor = col;
+      const nameEl = document.createElement('div');
+      nameEl.className = 'obj-helper-name';
+      nameEl.textContent = label;
+      nameEl.style.color = col;
+      el.appendChild(nameEl);
+      helperContainer.appendChild(el);
+      helperEntries.push({
+        el, nameEl,
+        getMesh: () => lagrangeMarkers[li],
+        getWorldR: () => lagrangeMarkers[li].scale.x,
+        color: col,
+        onClick: () => {},
+        name: label, type: 'probe', parentIdx: EARTH_IDX,
       });
     });
 
@@ -2317,6 +2495,103 @@ export default function App() {
         dsMat.opacity = 0;
       }
 
+      // ═══ Asteroid Belt animation ═══
+      // Visible when camera can see the belt (between Mars and Jupiter orbits)
+      const beltVisible = cD > 5 && cD < 5000 && sunScreen >= SUN_HIDE_PX;
+      beltMesh.visible = beltVisible;
+      if (beltVisible && frameCount % 3 === 0) {
+        const beltBatch = 500;
+        const beltStart = (frameCount * beltBatch / 3) % BELT_COUNT;
+        const beltEnd = Math.min(beltStart + beltBatch, BELT_COUNT);
+        for (let bi = beltStart; bi < beltEnd; bi++) {
+          beltAngles[bi] += beltSpeeds[bi] * dt * spd * 0.00001;
+          const bx = Math.cos(beltAngles[bi]) * beltRadii[bi];
+          const bz = Math.sin(beltAngles[bi]) * beltRadii[bi];
+          beltTmpMat.makeTranslation(bx, beltYOffsets[bi], bz);
+          beltMesh.setMatrixAt(bi, beltTmpMat);
+        }
+        beltMesh.instanceMatrix.needsUpdate = true;
+      }
+
+      // ═══ Lagrange Points (Sun-Earth L1-L5) ═══
+      const lagrangeVisible = cD > 5 && cD < 200 && sunScreen >= SUN_HIDE_PX;
+      if (lagrangeVisible) {
+        const ePos = meshes[EARTH_IDX].position;
+        const eDist = Math.sqrt(ePos.x * ePos.x + ePos.z * ePos.z); // Earth distance from Sun
+        const eAngle = Math.atan2(ePos.z, ePos.x);
+        const lDist = eDist * 0.01; // L1/L2 are ~1% of Earth-Sun distance
+        // L1: between Sun and Earth
+        lagrangeMarkers[0].position.set(
+          Math.cos(eAngle) * (eDist - lDist * 10), ePos.y,
+          Math.sin(eAngle) * (eDist - lDist * 10)
+        );
+        // L2: beyond Earth from Sun
+        lagrangeMarkers[1].position.set(
+          Math.cos(eAngle) * (eDist + lDist * 10), ePos.y,
+          Math.sin(eAngle) * (eDist + lDist * 10)
+        );
+        // L3: opposite side of Sun from Earth
+        lagrangeMarkers[2].position.set(
+          Math.cos(eAngle + Math.PI) * eDist, ePos.y,
+          Math.sin(eAngle + Math.PI) * eDist
+        );
+        // L4: 60° ahead of Earth in orbit
+        lagrangeMarkers[3].position.set(
+          Math.cos(eAngle + Math.PI / 3) * eDist, ePos.y,
+          Math.sin(eAngle + Math.PI / 3) * eDist
+        );
+        // L5: 60° behind Earth in orbit
+        lagrangeMarkers[4].position.set(
+          Math.cos(eAngle - Math.PI / 3) * eDist, ePos.y,
+          Math.sin(eAngle - Math.PI / 3) * eDist
+        );
+        const lagrangeScale = Math.max(0.05, cD * 0.003);
+        lagrangeMarkers.forEach(lm => { lm.visible = true; lm.scale.setScalar(lagrangeScale); });
+      } else {
+        lagrangeMarkers.forEach(lm => { lm.visible = false; });
+      }
+
+      // ═══ Famous Stars (galaxy scale) ═══
+      starMarkerGroup.visible = cD > 5000;
+      if (starMarkerGroup.visible) {
+        const starScale = Math.max(1, cD * 0.0005);
+        starMarkerGroup.children.forEach(c => {
+          if ((c as THREE.Mesh).isMesh) c.scale.setScalar(starScale);
+          if ((c as THREE.Sprite).isSprite) (c as THREE.Sprite).scale.setScalar(starScale * 4);
+        });
+        // Update star label positions
+        let starLblIdx = 0;
+        for (let sci = 0; sci < starMarkerGroup.children.length; sci++) {
+          const child = starMarkerGroup.children[sci];
+          if (!(child as THREE.Mesh).isMesh) continue;
+          if (starLblIdx >= starLabelEls.length) break;
+          const lbl = starLabelEls[starLblIdx];
+          starLabelVec.setFromMatrixPosition(child.matrixWorld);
+          starLabelVec.project(cam);
+          if (starLabelVec.z > 1) { lbl.style.display = 'none'; }
+          else {
+            const sx = (starLabelVec.x * 0.5 + 0.5) * innerWidth;
+            const sy = (starLabelVec.y * -0.5 + 0.5) * innerHeight;
+            lbl.style.display = showLabels ? 'block' : 'none';
+            (lbl.style as any).translate = `${sx + 10}px ${sy - 6}px`;
+          }
+          starLblIdx++;
+        }
+      } else {
+        starLabelEls.forEach(lbl => { lbl.style.display = 'none'; });
+      }
+
+      // ═══ Oort Cloud (outer solar system scale) ═══
+      if (cD > 3000 && cD < 80000) {
+        oortCloud.visible = true;
+        const oortFadeIn = Math.min(1, (cD - 3000) / 5000);
+        const oortFadeOut = cD > 60000 ? Math.max(0, 1 - (cD - 60000) / 20000) : 1;
+        (oortCloud.material as THREE.PointsMaterial).opacity = 0.3 * oortFadeIn * oortFadeOut;
+      } else {
+        oortCloud.visible = false;
+        (oortCloud.material as THREE.PointsMaterial).opacity = 0;
+      }
+
 
 
       ren.render(scene, cam);
@@ -2402,6 +2677,12 @@ export default function App() {
       scene.remove(milkyWayPlane); milkyWayPlane.geometry.dispose(); (milkyWayPlane.material as THREE.Material).dispose();
       scene.remove(deepSpaceSphere); deepSpaceSphere.geometry.dispose(); (deepSpaceSphere.material as THREE.Material).dispose();
       scene.remove(solarMarker); solarMarker.geometry.dispose(); (solarMarker.material as THREE.Material).dispose();
+      // Dispose new scene objects
+      scene.remove(beltMesh); beltMesh.geometry.dispose(); (beltMesh.material as THREE.Material).dispose(); beltMesh.dispose();
+      lagrangeMarkers.forEach(lm => { scene.remove(lm); lm.geometry.dispose(); (lm.material as THREE.Material).dispose(); });
+      scene.remove(starMarkerGroup);
+      scene.remove(oortCloud); oortCloud.geometry.dispose(); (oortCloud.material as THREE.Material).dispose();
+      starLabelEls.forEach(el => el.remove());
       ren.dispose();
       canvasRef.current?.removeChild(ren.domElement);
       audio.pause(); audio.src = '';
