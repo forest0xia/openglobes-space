@@ -1535,9 +1535,13 @@ export default function App() {
     };
     updSpd();
     (window as any).__resetCam = () => {
-      // "Live" reset: resync to real-time NOW, focus on Earth, keep speed unchanged
+      // "Live" reset: resync to real-time NOW, focus on Earth, reset speed to 1s/s
       focusObj(EARTH_IDX);
       tA = { t: 0.3, p: Math.PI / 3 }; // default viewing angle
+      // Reset speed to real-time (1秒/秒)
+      spdIdx = 0;
+      spd = SPEED_PRESETS[spdIdx].v;
+      updSpd();
       // Resync simulation clock to wall clock (back to "live")
       simStartMs = Date.now(); t = 0; lastTime = performance.now();
       paused = false;
