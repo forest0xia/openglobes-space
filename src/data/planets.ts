@@ -124,6 +124,52 @@ export const PLANETS: PlanetData[] = [
     stats: { '直径': '49,528 km', '公转周期': '164.8 年', '温度': '-200°C', '已知卫星': '16' },
     fact: '海王星风速达2,100km/h（1.6倍音速）。它是唯一通过数学预测发现的行星（1846年）。',
   },
+  // ═══════ DWARF PLANETS ═══════
+  {
+    id: 'ceres', name: 'Ceres', nameCn: '谷神星 — 小行星带最大天体',
+    color: '#8C8C7A', emissive: '#1A1A15',
+    radius: 0.25, realRadiusKm: 473,
+    distance: 55.38, speed: 0.218, tilt: 4, rotationPeriod: 0.378, textureType: 'rock',
+    eccentricity: 0.0758, orbitalIncl: 10.59, longAscNode: 80.33, argPerihelion: 73.60,
+    stats: { '直径': '946 km', '公转周期': '4.6 年', '表面温度': '-106°C', '分类': '矮行星' },
+    fact: '谷神星是小行星带中最大的天体，也是最小的矮行星。2015年黎明号探测器发现其表面有神秘的明亮盐沉积物。',
+  },
+  {
+    id: 'pluto', name: 'Pluto', nameCn: '冥王星 — 曾经的第九行星',
+    color: '#C4A882', emissive: '#2A2218',
+    radius: 0.3, realRadiusKm: 1188,
+    distance: 790, speed: 0.00403, tilt: 122.53, rotationPeriod: 6.387, textureType: 'rock',
+    eccentricity: 0.2488, orbitalIncl: 17.16, longAscNode: 110.30, argPerihelion: 113.76,
+    stats: { '直径': '2,377 km', '公转周期': '248 年', '表面温度': '-230°C', '卫星': '5' },
+    fact: '2006年被"降级"为矮行星。新视野号2015年飞掠时发现其表面有一个巨大心形冰原（汤博区）。它的轨道与海王星交叉。',
+  },
+  {
+    id: 'haumea', name: 'Haumea', nameCn: '妊神星 — 旋转最快的矮行星',
+    color: '#D4C4B0', emissive: '#2A2620',
+    radius: 0.25, realRadiusKm: 816,
+    distance: 860, speed: 0.00353, tilt: 126, rotationPeriod: 0.163, textureType: 'rock',
+    eccentricity: 0.1912, orbitalIncl: 28.22, longAscNode: 122.17, argPerihelion: 239.18,
+    stats: { '直径': '~1,632 km', '公转周期': '283 年', '形状': '椭球形', '卫星': '2' },
+    fact: '妊神星自转周期仅3.9小时，是太阳系大天体中最快的。高速旋转使其呈橄榄球形。已知矮行星中唯一有环的。',
+  },
+  {
+    id: 'makemake', name: 'Makemake', nameCn: '鸟神星 — 柯伊伯带的红色世界',
+    color: '#B5886A', emissive: '#231A12',
+    radius: 0.25, realRadiusKm: 715,
+    distance: 916, speed: 0.00322, tilt: 29, rotationPeriod: 0.952, textureType: 'rock',
+    eccentricity: 0.1559, orbitalIncl: 28.96, longAscNode: 79.38, argPerihelion: 297.24,
+    stats: { '直径': '~1,430 km', '公转周期': '306 年', '表面温度': '-240°C', '卫星': '1' },
+    fact: '以复活节岛神话中造物神命名。其表面覆盖甲烷和乙烷冰，呈现独特的红棕色。',
+  },
+  {
+    id: 'eris', name: 'Eris', nameCn: '阋神星 — 最远的矮行星',
+    color: '#E0D8D0', emissive: '#2A2826',
+    radius: 0.3, realRadiusKm: 1163,
+    distance: 1360, speed: 0.00179, tilt: 78, rotationPeriod: 1.08, textureType: 'rock',
+    eccentricity: 0.4407, orbitalIncl: 44.04, longAscNode: 35.87, argPerihelion: 151.43,
+    stats: { '直径': '2,326 km', '公转周期': '559 年', '表面温度': '-243°C', '卫星': '1' },
+    fact: '阋神星的发现直接导致冥王星被重新分类为矮行星。它比冥王星更重，表面是太阳系最亮的之一（反照率96%）。',
+  },
 ];
 
 // ═══════ CONSTANTS ═══════

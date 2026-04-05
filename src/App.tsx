@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { PLANETS } from './data/planets';
 import { NATURAL_MOONS, MOON_COUNTS } from './data/moons';
 import { PROBES } from './data/probesMeta';
-import { fetchAllSatellites, fetchStarlinkSatellites, getSatPositionECI, eciToScene, SAT_GROUPS, type SatRecord, gstime } from './services/celestrak';
+import { fetchAllSatellites, fetchStarlinkSatellites, fetchDebrisSatellites, getSatPositionECI, eciToScene, SAT_GROUPS, type SatRecord, gstime } from './services/celestrak';
 import { createSatelliteModel } from './utils/satModel'; // only used for focused satellite detail model
 import { createProbeModel } from './utils/probeModels';
 import { createTrailLine, TRAIL_N } from './utils/SatTrail';
@@ -21,6 +21,7 @@ import { createSpacecraftModel, createTrajectoryLine, appendTrailPoint, createEx
 // ═══ Module-level constants (accessible in both useEffect and JSX) ═══
 const GID_STARLINK = 'starlink';
 const GID_STATIONS = 'stations';
+const GID_DEBRIS = 'debris';
 
 export default function App() {
   const canvasRef = useRef<HTMLDivElement>(null);
@@ -66,6 +67,9 @@ export default function App() {
   const [starlinkLoading, setStarlinkLoading] = useState(false);
   const [starlinkProgress, setStarlinkProgress] = useState(0);
   const [starlinkTotal, setStarlinkTotal] = useState(0);
+  const [debrisLoading, setDebrisLoading] = useState(false);
+  const [debrisProgress, setDebrisProgress] = useState(0);
+  const [debrisTotal, setDebrisTotal] = useState(0);
   const [probesVisible, setProbesVisible] = useState(false);
   const [satellites, setSatellites] = useState<SatRecord[]>([]);
   // ═══ Lunar Mission ═══
@@ -92,14 +96,15 @@ export default function App() {
     trailPointCount: 0, lastTrailTime: 0, lastPhaseId: '',
     rocketModel: null, moduleModel: null,
   });
-  const [satGroups, setSatGroups] = useState<Record<string, boolean>>({ beidou: true, weather: true, stations: false, starlink: false, gps: false, visual: false, resource: false, science: false, geodetic: false });
+  const [satGroups, setSatGroups] = useState<Record<string, boolean>>({ beidou: true, weather: true, stations: false, starlink: false, gps: false, visual: false, resource: false, science: false, geodetic: false, debris: false });
 
   // Store refs accessible from inside useEffect
   const satDataRef = useRef<{
     sats: SatRecord[]; meshes: (THREE.Mesh | null)[]; groups: Record<string, boolean>;
     orbitLines: THREE.Line[];
     starlinkMesh?: THREE.InstancedMesh; starlinkSats?: SatRecord[]; starlinkPositions?: Float32Array;
-  }>({ sats: [], meshes: [], groups: { beidou: true, weather: true, stations: false, starlink: false, gps: false, visual: false, resource: false, science: false, geodetic: false }, orbitLines: [] });
+    debrisMesh?: THREE.InstancedMesh; debrisSats?: SatRecord[]; debrisPositions?: Float32Array;
+  }>({ sats: [], meshes: [], groups: { beidou: true, weather: true, stations: false, starlink: false, gps: false, visual: false, resource: false, science: false, geodetic: false, debris: false }, orbitLines: [] });
 
   useEffect(() => {
     // ═══ SHARED CONSTANTS — single source of truth for thresholds ═══
@@ -109,6 +114,8 @@ export default function App() {
     const STATION_SCALE = 3;           // stations are this × bigger than regular sats
     const STARLINK_DOT_FACTOR = 0.002; // Starlink instance size relative to Earth
     const STARLINK_LIST_PREVIEW = 25;  // how many Starlink shown in sidebar list
+    const DEBRIS_DOT_FACTOR = 0.0015;  // Debris instance size relative to Earth (smaller than Starlink)
+    const DEBRIS_LIST_PREVIEW = 25;    // how many debris shown in sidebar list
     const SPEED_HIDE_UI = 1800;        // spd > this: hide sat labels/brackets
     // SOLAR_SYSTEM_SCALE removed — use SUN_HIDE_PX for consistent galaxy-scale detection
     const KEPLER_ITERATIONS = 5;       // Newton's method iterations for Kepler eq
@@ -270,6 +277,141 @@ export default function App() {
       (deepSpaceSphere.material as THREE.MeshBasicMaterial).map = tex;
       (deepSpaceSphere.material as THREE.MeshBasicMaterial).needsUpdate = true;
     });
+
+    // ═══════ ASTEROID BELT ═══════
+    // Between Mars (~30.48) and Jupiter (~104.1), centered around ~67 scene units (~3.35 AU)
+    const BELT_COUNT = 5000;
+    const BELT_INNER = 44;   // ~2.2 AU
+    const BELT_OUTER = 66;   // ~3.3 AU
+    const beltGeo = new THREE.TetrahedronGeometry(0.08);
+    const beltMat = new THREE.MeshStandardMaterial({ color: 0x888877, metalness: 0.4, roughness: 0.8, emissive: new THREE.Color(0x222211), emissiveIntensity: 0.3 });
+    const beltMesh = new THREE.InstancedMesh(beltGeo, beltMat, BELT_COUNT);
+    beltMesh.frustumCulled = false;
+    const beltTmpMat = new THREE.Matrix4();
+    const beltTmpQ = new THREE.Quaternion();
+    const beltAngles = new Float32Array(BELT_COUNT);    // orbital angles
+    const beltRadii = new Float32Array(BELT_COUNT);     // orbital radii
+    const beltSpeeds = new Float32Array(BELT_COUNT);    // angular speeds
+    const beltYOffsets = new Float32Array(BELT_COUNT);   // vertical offsets
+    for (let bi = 0; bi < BELT_COUNT; bi++) {
+      const r = BELT_INNER + Math.random() * (BELT_OUTER - BELT_INNER);
+      // Kirkwood gaps: reduce density at specific radii (resonances with Jupiter)
+      const normalR = (r - BELT_INNER) / (BELT_OUTER - BELT_INNER);
+      if ((normalR > 0.3 && normalR < 0.35) || (normalR > 0.55 && normalR < 0.6)) {
+        // Push away from gaps
+        beltRadii[bi] = r + (Math.random() > 0.5 ? 2 : -2);
+      } else {
+        beltRadii[bi] = r;
+      }
+      beltAngles[bi] = Math.random() * Math.PI * 2;
+      beltSpeeds[bi] = (0.08 + Math.random() * 0.02) / Math.sqrt(r / 20); // Kepler's 3rd law
+      beltYOffsets[bi] = (Math.random() - 0.5) * 3 * (r / BELT_OUTER); // vertical spread
+      const scale = 0.3 + Math.random() * 1.5;
+      beltTmpQ.setFromEuler(new THREE.Euler(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI));
+      beltTmpMat.compose(
+        new THREE.Vector3(
+          Math.cos(beltAngles[bi]) * beltRadii[bi],
+          beltYOffsets[bi],
+          Math.sin(beltAngles[bi]) * beltRadii[bi]
+        ),
+        beltTmpQ,
+        new THREE.Vector3(scale, scale, scale)
+      );
+      beltMesh.setMatrixAt(bi, beltTmpMat);
+    }
+    beltMesh.instanceMatrix.needsUpdate = true;
+    scene.add(beltMesh);
+
+    // ═══════ LAGRANGE POINTS (Sun-Earth L1-L5) ═══════
+    const lagrangeMarkers: THREE.Mesh[] = [];
+    const lagrangeLabels = ['L1', 'L2', 'L3', 'L4', 'L5'];
+    const lagrangeColors = [0x00CCFF, 0x00CCFF, 0x00CCFF, 0x66FF66, 0x66FF66];
+    for (let li = 0; li < 5; li++) {
+      const lMesh = new THREE.Mesh(
+        new THREE.OctahedronGeometry(0.15, 0),
+        new THREE.MeshStandardMaterial({
+          color: lagrangeColors[li], metalness: 0.5, roughness: 0.3,
+          emissive: new THREE.Color(lagrangeColors[li]), emissiveIntensity: 0.6,
+          transparent: true, opacity: 0.8,
+        })
+      );
+      lMesh.visible = false;
+      scene.add(lMesh);
+      lagrangeMarkers.push(lMesh);
+    }
+
+    // ═══════ FAMOUS STARS (at galaxy scale) ═══════
+    // Position relative to Sun. 1 ly ≈ 155,860 scene units (compressed galaxy scale)
+    // We use MW_SIZE-relative coords to place them on the Milky Way plane
+    const FAMOUS_STARS = [
+      { name: '比邻星', nameEn: 'Proxima Centauri', dist: 4.24, ra: 217.4, dec: -62.7, spectral: 'M5.5V', color: 0xFF6644, mag: 11.1 },
+      { name: '天狼星', nameEn: 'Sirius', dist: 8.6, ra: 101.3, dec: -16.7, spectral: 'A1V', color: 0xAABBFF, mag: -1.46 },
+      { name: '织女星', nameEn: 'Vega', dist: 25.0, ra: 279.2, dec: 38.8, spectral: 'A0V', color: 0xCCDDFF, mag: 0.03 },
+      { name: '北极星', nameEn: 'Polaris', dist: 433, ra: 37.9, dec: 89.3, spectral: 'F7Ib', color: 0xFFEEAA, mag: 1.98 },
+      { name: '参宿四', nameEn: 'Betelgeuse', dist: 700, ra: 88.8, dec: 7.4, spectral: 'M1Ia', color: 0xFF4422, mag: 0.42 },
+      { name: '参宿七', nameEn: 'Rigel', dist: 860, ra: 78.6, dec: -8.2, spectral: 'B8Ia', color: 0x99BBFF, mag: 0.13 },
+      { name: '大角星', nameEn: 'Arcturus', dist: 37, ra: 213.9, dec: 19.2, spectral: 'K1.5III', color: 0xFFAA44, mag: -0.05 },
+      { name: '天津四', nameEn: 'Deneb', dist: 2615, ra: 310.4, dec: 45.3, spectral: 'A2Ia', color: 0xDDEEFF, mag: 1.25 },
+      { name: '心宿二', nameEn: 'Antares', dist: 550, ra: 247.4, dec: -26.4, spectral: 'M1Ib', color: 0xFF3311, mag: 0.96 },
+      { name: '五车二', nameEn: 'Capella', dist: 43, ra: 79.2, dec: 46.0, spectral: 'G8III', color: 0xFFDD66, mag: 0.08 },
+    ];
+    const starMarkerGroup = new THREE.Group();
+    const LY_TO_SCENE = 200; // compressed: real would be 155,860 but we compress to fit MW_SIZE
+    FAMOUS_STARS.forEach(star => {
+      // Convert RA/Dec to 3D position relative to Sun
+      const raRad = star.ra * Math.PI / 180;
+      const decRad = star.dec * Math.PI / 180;
+      const d = Math.min(star.dist * LY_TO_SCENE, MW_SIZE * 0.4); // cap at 40% MW size
+      const x = d * Math.cos(decRad) * Math.cos(raRad);
+      const y = d * Math.sin(decRad);
+      const z = d * Math.cos(decRad) * Math.sin(raRad);
+      // Star sphere
+      const starSize = Math.max(5, 40 - star.mag * 8); // brighter = larger
+      const sMesh = new THREE.Mesh(
+        new THREE.SphereGeometry(starSize, 8, 8),
+        new THREE.MeshBasicMaterial({ color: star.color })
+      );
+      sMesh.position.set(x, y, z);
+      sMesh.userData = { starData: star };
+      starMarkerGroup.add(sMesh);
+      // Glow sprite
+      const glowMat = new THREE.SpriteMaterial({
+        color: star.color, transparent: true, opacity: 0.4,
+        blending: THREE.AdditiveBlending,
+      });
+      const glow = new THREE.Sprite(glowMat);
+      glow.scale.setScalar(starSize * 4);
+      glow.position.copy(sMesh.position);
+      starMarkerGroup.add(glow);
+    });
+    starMarkerGroup.visible = false;
+    scene.add(starMarkerGroup);
+
+    // ═══════ OORT CLOUD ═══════
+    // Oort Cloud: spherical shell from ~2,000 AU to ~50,000 AU
+    // In scene units: 2000 AU = 40,000 su, 50,000 AU = 1,000,000 su
+    // We compress it to fit within the rendering range
+    const OORT_COUNT = 3000;
+    const OORT_INNER = 8000;   // compressed inner boundary
+    const OORT_OUTER = 60000;  // compressed outer boundary
+    const oortGeo = new THREE.BufferGeometry();
+    const oortPos = new Float32Array(OORT_COUNT * 3);
+    for (let oi = 0; oi < OORT_COUNT; oi++) {
+      const r = OORT_INNER + Math.pow(Math.random(), 0.5) * (OORT_OUTER - OORT_INNER); // denser at inner edge
+      const theta = Math.random() * Math.PI * 2;
+      const phi = Math.acos(2 * Math.random() - 1); // uniform sphere distribution
+      oortPos[oi * 3] = r * Math.sin(phi) * Math.cos(theta);
+      oortPos[oi * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
+      oortPos[oi * 3 + 2] = r * Math.cos(phi);
+    }
+    oortGeo.setAttribute('position', new THREE.BufferAttribute(oortPos, 3));
+    const oortMat = new THREE.PointsMaterial({
+      color: 0x8899AA, size: 15, sizeAttenuation: true,
+      transparent: true, opacity: 0, blending: THREE.AdditiveBlending,
+    });
+    const oortCloud = new THREE.Points(oortGeo, oortMat);
+    oortCloud.visible = false;
+    scene.add(oortCloud);
 
     // ═══════ LOAD TEXTURE WITH FALLBACK ═══════
     function loadTex(id: string, col: number, type: 'sun' | 'gas' | 'rock'): THREE.Texture {
@@ -823,6 +965,20 @@ export default function App() {
       sd.starlinkPositions = undefined;
     }
 
+    // Dispose Debris InstancedMesh resources
+    function disposeDebris() {
+      const sd = satDataRef.current;
+      if (sd.debrisMesh) {
+        scene.remove(sd.debrisMesh);
+        sd.debrisMesh.geometry.dispose();
+        (sd.debrisMesh.material as THREE.Material).dispose();
+        sd.debrisMesh.dispose();
+        sd.debrisMesh = undefined;
+      }
+      sd.debrisSats = undefined;
+      sd.debrisPositions = undefined;
+    }
+
     // Toggle satellite group visibility
     (window as any).__toggleSatGroup = async (gid: string) => {
       const g = satDataRef.current.groups;
@@ -845,8 +1001,9 @@ export default function App() {
         // At fit distance, 1px ≈ earthVisR * 2 / screenH. So 3px ≈ earthVisR * 0.006.
         const earthVisR = baseScale(EARTH_IDX) * earthSceneR;
         const slDotR = earthVisR * STARLINK_DOT_FACTOR;
-        const slGeo = new THREE.BoxGeometry(slDotR * 2, slDotR * 2, slDotR * 2); // 12 triangles, efficient
-        const slMat = new THREE.MeshBasicMaterial({ color: 0x8B5CF6 });
+        // Flat panel shape: wider and thinner than a cube, more recognizable as satellite
+        const slGeo = new THREE.BoxGeometry(slDotR * 3, slDotR * 0.4, slDotR * 2);
+        const slMat = new THREE.MeshStandardMaterial({ color: 0x8B5CF6, metalness: 0.6, roughness: 0.3, emissive: new THREE.Color(0x4a2e8a), emissiveIntensity: 0.5 });
         const slMesh = new THREE.InstancedMesh(slGeo, slMat, slCount);
         slMesh.frustumCulled = false;
         slMesh.visible = false;
@@ -903,6 +1060,76 @@ export default function App() {
           setSatellites(prev => prev.filter(s => s.groupId !== GID_STARLINK));
         } else if (satDataRef.current.starlinkMesh) {
           satDataRef.current.starlinkMesh.visible = true;
+        }
+      }
+
+      // Debris: on-demand load with InstancedMesh (same pattern as Starlink)
+      if (gid === GID_DEBRIS && g[gid] && !satDataRef.current.debrisMesh) {
+        setDebrisLoading(true);
+        setDebrisProgress(0);
+        const newDebris = await fetchDebrisSatellites();
+        setDebrisProgress(70);
+        setDebrisTotal(newDebris.length);
+
+        const dbCount = newDebris.length;
+        const dbPositions = new Float32Array(dbCount * 3);
+        const earthVisR = baseScale(EARTH_IDX) * earthSceneR;
+        const dbDotR = earthVisR * DEBRIS_DOT_FACTOR;
+        // Irregular tetrahedron shape: looks like a tumbling fragment at any scale
+        const dbGeo = new THREE.TetrahedronGeometry(dbDotR * 1.5);
+        const dbMat = new THREE.MeshStandardMaterial({ color: 0xEF4444, metalness: 0.5, roughness: 0.6, emissive: new THREE.Color(0x881111), emissiveIntensity: 0.5 });
+        const dbMesh = new THREE.InstancedMesh(dbGeo, dbMat, dbCount);
+        dbMesh.frustumCulled = false;
+        dbMesh.visible = false;
+        scene.add(dbMesh);
+
+        const tmpMat = new THREE.Matrix4();
+        setDebrisProgress(70);
+        const initNow = new Date();
+        const epDB = meshes[EARTH_IDX].position;
+        const scDB = baseScale(EARTH_IDX);
+        for (let di = 0; di < dbCount; di++) {
+          const dbEci = getSatPositionECI(newDebris[di], initNow);
+          if (dbEci && isFinite(dbEci.x) && isFinite(dbEci.y) && isFinite(dbEci.z)) {
+            const dbP = eciToScene(dbEci, epDB, earthSceneR, scDB, initNow, meshes[EARTH_IDX].rotation.y);
+            const rx = dbP.x - epDB.x, ry = dbP.y - epDB.y, rz = dbP.z - epDB.z;
+            dbPositions[di * 3] = rx;
+            dbPositions[di * 3 + 1] = ry;
+            dbPositions[di * 3 + 2] = rz;
+            tmpMat.makeTranslation(rx, ry, rz);
+          } else {
+            tmpMat.makeTranslation(0, 0, 0);
+          }
+          dbMesh.setMatrixAt(di, tmpMat);
+          if (di % 200 === 0) {
+            setDebrisProgress(70 + Math.round((di / dbCount) * 30));
+            await new Promise(r => setTimeout(r, 0));
+          }
+        }
+        dbMesh.instanceMatrix.needsUpdate = true;
+        dbMesh.visible = true;
+
+        satDataRef.current.debrisMesh = dbMesh;
+        satDataRef.current.debrisSats = newDebris;
+        satDataRef.current.debrisPositions = dbPositions;
+
+        setSatellites(prev => {
+          const withoutDb = prev.filter(s => s.groupId !== GID_DEBRIS);
+          return [...withoutDb, ...newDebris.slice(0, DEBRIS_LIST_PREVIEW).map(s => ({ ...s, groupId: 'debris' }))];
+        });
+        if (satCountRef.current) satCountRef.current.textContent = `${satDataRef.current.sats.length + (satDataRef.current.starlinkSats?.length || 0) + dbCount} 颗卫星追踪中`;
+        setDebrisProgress(100);
+        setDebrisLoading(false);
+        return;
+      }
+
+      // Debris: dispose on off, show on on
+      if (gid === GID_DEBRIS) {
+        if (!g[gid]) {
+          disposeDebris();
+          setSatellites(prev => prev.filter(s => s.groupId !== GID_DEBRIS));
+        } else if (satDataRef.current.debrisMesh) {
+          satDataRef.current.debrisMesh.visible = true;
         }
       }
 
@@ -1398,9 +1625,13 @@ export default function App() {
     };
     updSpd();
     (window as any).__resetCam = () => {
-      // "Live" reset: resync to real-time NOW, focus on Earth, keep speed unchanged
+      // "Live" reset: resync to real-time NOW, focus on Earth, reset speed to 1s/s
       focusObj(EARTH_IDX);
       tA = { t: 0.3, p: Math.PI / 3 }; // default viewing angle
+      // Reset speed to real-time (1秒/秒)
+      spdIdx = 0;
+      spd = SPEED_PRESETS[spdIdx].v;
+      updSpd();
       // Resync simulation clock to wall clock (back to "live")
       simStartMs = Date.now(); t = 0; lastTime = performance.now();
       paused = false;
@@ -1428,6 +1659,9 @@ export default function App() {
       earth: [100.464, 35999.372], mars: [355.453, 19140.300],
       jupiter: [34.351, 3034.906], saturn: [50.077, 1222.114],
       uranus: [314.055, 428.467], neptune: [304.349, 218.486],
+      // Dwarf planets — mean longitude at J2000 and rate (deg/century)
+      ceres: [153.332, 7816.137], pluto: [238.929, 1453.060],
+      haumea: [198.07, 1271.50], makemake: [84.50, 1176.20], eris: [35.87, 643.30],
     };
     // Julian centuries since J2000 (2000-01-01 12:00 TT)
     const J2000 = Date.UTC(2000, 0, 1, 12, 0, 0);
@@ -1652,6 +1886,46 @@ export default function App() {
         color: col,
         onClick: () => (window as any).__focusProbeByIdx(i),
         name: pr.cn, type: 'probe', parentIdx,
+      });
+    });
+
+    // Create DOM labels for famous stars (galaxy scale only, separate from planet helpers)
+    const starLabelEls: HTMLDivElement[] = [];
+    const starLabelVec = new THREE.Vector3();
+    FAMOUS_STARS.forEach(star => {
+      const el = document.createElement('div');
+      el.className = 'obj-helper-name';
+      el.textContent = `${star.name} (${star.nameEn})`;
+      el.style.color = '#' + star.color.toString(16).padStart(6, '0');
+      el.style.position = 'absolute';
+      el.style.pointerEvents = 'none';
+      el.style.display = 'none';
+      el.style.fontSize = '10px';
+      el.style.textShadow = '0 0 6px rgba(0,0,0,0.8)';
+      el.style.whiteSpace = 'nowrap';
+      helperContainer.appendChild(el);
+      starLabelEls.push(el);
+    });
+
+    // Create helpers for Lagrange points
+    lagrangeLabels.forEach((label, li) => {
+      const col = '#' + lagrangeColors[li].toString(16).padStart(6, '0');
+      const el = document.createElement('div');
+      el.className = 'obj-helper';
+      el.style.borderColor = col;
+      const nameEl = document.createElement('div');
+      nameEl.className = 'obj-helper-name';
+      nameEl.textContent = label;
+      nameEl.style.color = col;
+      el.appendChild(nameEl);
+      helperContainer.appendChild(el);
+      helperEntries.push({
+        el, nameEl,
+        getMesh: () => lagrangeMarkers[li],
+        getWorldR: () => lagrangeMarkers[li].scale.x,
+        color: col,
+        onClick: () => {},
+        name: label, type: 'probe', parentIdx: EARTH_IDX,
       });
     });
 
@@ -2120,6 +2394,34 @@ export default function App() {
           slMesh.position.copy(ep);
           slMesh.instanceMatrix.needsUpdate = true;
         }
+
+        // ═══ Debris InstancedMesh positions (single draw call, batched) ═══
+        if (sd.debrisMesh) {
+          const dbGroupOn = sd.groups[GID_DEBRIS] ?? false;
+          sd.debrisMesh.visible = dbGroupOn && !hideAllSats;
+        }
+        if (sd.debrisMesh?.visible && satThisFrame && sd.debrisSats && sd.debrisPositions) {
+          const dbSats = sd.debrisSats;
+          const dbPos = sd.debrisPositions;
+          const dbMesh = sd.debrisMesh;
+          const dbBatch = spd < 300 ? 500 : spd < 3600 ? 200 : 100;
+          const dbStart = (frameCount * dbBatch) % dbSats.length;
+          const dbEnd = Math.min(dbStart + dbBatch, dbSats.length);
+          for (let di = dbStart; di < dbEnd; di++) {
+            const dbEci = getSatPositionECI(dbSats[di], now);
+            if (dbEci && isFinite(dbEci.x)) {
+              const dbP = eciToScene(dbEci, ep, earthSceneR, sc, now, eRotY);
+              const rx = dbP.x - ep.x, ry = dbP.y - ep.y, rz = dbP.z - ep.z;
+              dbPos[di * 3] = rx; dbPos[di * 3 + 1] = ry; dbPos[di * 3 + 2] = rz;
+              _slTmpMat.makeTranslation(rx, ry, rz);
+            } else {
+              _slTmpMat.makeTranslation(dbPos[di * 3], dbPos[di * 3 + 1], dbPos[di * 3 + 2]);
+            }
+            dbMesh.setMatrixAt(di, _slTmpMat);
+          }
+          dbMesh.position.copy(ep);
+          dbMesh.instanceMatrix.needsUpdate = true;
+        }
       }
 
       // Satellite orbit lines: auto-show at high speed (trails hidden), auto-hide at low speed
@@ -2373,6 +2675,103 @@ export default function App() {
         dsMat.opacity = 0;
       }
 
+      // ═══ Asteroid Belt animation ═══
+      // Visible when camera can see the belt (between Mars and Jupiter orbits)
+      const beltVisible = cD > 5 && cD < 5000 && sunScreen >= SUN_HIDE_PX;
+      beltMesh.visible = beltVisible;
+      if (beltVisible && frameCount % 3 === 0) {
+        const beltBatch = 500;
+        const beltStart = (frameCount * beltBatch / 3) % BELT_COUNT;
+        const beltEnd = Math.min(beltStart + beltBatch, BELT_COUNT);
+        for (let bi = beltStart; bi < beltEnd; bi++) {
+          beltAngles[bi] += beltSpeeds[bi] * dt * spd * 0.00001;
+          const bx = Math.cos(beltAngles[bi]) * beltRadii[bi];
+          const bz = Math.sin(beltAngles[bi]) * beltRadii[bi];
+          beltTmpMat.makeTranslation(bx, beltYOffsets[bi], bz);
+          beltMesh.setMatrixAt(bi, beltTmpMat);
+        }
+        beltMesh.instanceMatrix.needsUpdate = true;
+      }
+
+      // ═══ Lagrange Points (Sun-Earth L1-L5) ═══
+      const lagrangeVisible = cD > 5 && cD < 200 && sunScreen >= SUN_HIDE_PX;
+      if (lagrangeVisible) {
+        const ePos = meshes[EARTH_IDX].position;
+        const eDist = Math.sqrt(ePos.x * ePos.x + ePos.z * ePos.z); // Earth distance from Sun
+        const eAngle = Math.atan2(ePos.z, ePos.x);
+        const lDist = eDist * 0.01; // L1/L2 are ~1% of Earth-Sun distance
+        // L1: between Sun and Earth
+        lagrangeMarkers[0].position.set(
+          Math.cos(eAngle) * (eDist - lDist * 10), ePos.y,
+          Math.sin(eAngle) * (eDist - lDist * 10)
+        );
+        // L2: beyond Earth from Sun
+        lagrangeMarkers[1].position.set(
+          Math.cos(eAngle) * (eDist + lDist * 10), ePos.y,
+          Math.sin(eAngle) * (eDist + lDist * 10)
+        );
+        // L3: opposite side of Sun from Earth
+        lagrangeMarkers[2].position.set(
+          Math.cos(eAngle + Math.PI) * eDist, ePos.y,
+          Math.sin(eAngle + Math.PI) * eDist
+        );
+        // L4: 60° ahead of Earth in orbit
+        lagrangeMarkers[3].position.set(
+          Math.cos(eAngle + Math.PI / 3) * eDist, ePos.y,
+          Math.sin(eAngle + Math.PI / 3) * eDist
+        );
+        // L5: 60° behind Earth in orbit
+        lagrangeMarkers[4].position.set(
+          Math.cos(eAngle - Math.PI / 3) * eDist, ePos.y,
+          Math.sin(eAngle - Math.PI / 3) * eDist
+        );
+        const lagrangeScale = Math.max(0.05, cD * 0.003);
+        lagrangeMarkers.forEach(lm => { lm.visible = true; lm.scale.setScalar(lagrangeScale); });
+      } else {
+        lagrangeMarkers.forEach(lm => { lm.visible = false; });
+      }
+
+      // ═══ Famous Stars (galaxy scale) ═══
+      starMarkerGroup.visible = cD > 5000;
+      if (starMarkerGroup.visible) {
+        const starScale = Math.max(1, cD * 0.0005);
+        starMarkerGroup.children.forEach(c => {
+          if ((c as THREE.Mesh).isMesh) c.scale.setScalar(starScale);
+          if ((c as THREE.Sprite).isSprite) (c as THREE.Sprite).scale.setScalar(starScale * 4);
+        });
+        // Update star label positions
+        let starLblIdx = 0;
+        for (let sci = 0; sci < starMarkerGroup.children.length; sci++) {
+          const child = starMarkerGroup.children[sci];
+          if (!(child as THREE.Mesh).isMesh) continue;
+          if (starLblIdx >= starLabelEls.length) break;
+          const lbl = starLabelEls[starLblIdx];
+          starLabelVec.setFromMatrixPosition(child.matrixWorld);
+          starLabelVec.project(cam);
+          if (starLabelVec.z > 1) { lbl.style.display = 'none'; }
+          else {
+            const sx = (starLabelVec.x * 0.5 + 0.5) * innerWidth;
+            const sy = (starLabelVec.y * -0.5 + 0.5) * innerHeight;
+            lbl.style.display = showLabels ? 'block' : 'none';
+            (lbl.style as any).translate = `${sx + 10}px ${sy - 6}px`;
+          }
+          starLblIdx++;
+        }
+      } else {
+        starLabelEls.forEach(lbl => { lbl.style.display = 'none'; });
+      }
+
+      // ═══ Oort Cloud (outer solar system scale) ═══
+      if (cD > 3000 && cD < 80000) {
+        oortCloud.visible = true;
+        const oortFadeIn = Math.min(1, (cD - 3000) / 5000);
+        const oortFadeOut = cD > 60000 ? Math.max(0, 1 - (cD - 60000) / 20000) : 1;
+        (oortCloud.material as THREE.PointsMaterial).opacity = 0.3 * oortFadeIn * oortFadeOut;
+      } else {
+        oortCloud.visible = false;
+        (oortCloud.material as THREE.PointsMaterial).opacity = 0;
+      }
+
 
 
       ren.render(scene, cam);
@@ -2428,6 +2827,7 @@ export default function App() {
       // Dispose all satellite resources
       for (let i = 0; i < satMeshes.length; i++) dematerializeSat(i);
       disposeStarlink();
+      disposeDebris();
       // Dispose satellite orbit lines
       satDataRef.current.orbitLines.forEach(ol => { scene.remove(ol); ol.geometry.dispose(); (ol.material as THREE.Material).dispose(); });
       // Dispose planet meshes, materials, textures
@@ -2461,6 +2861,12 @@ export default function App() {
       scene.remove(milkyWayPlane); milkyWayPlane.geometry.dispose(); (milkyWayPlane.material as THREE.Material).dispose();
       scene.remove(deepSpaceSphere); deepSpaceSphere.geometry.dispose(); (deepSpaceSphere.material as THREE.Material).dispose();
       scene.remove(solarMarker); solarMarker.geometry.dispose(); (solarMarker.material as THREE.Material).dispose();
+      // Dispose new scene objects
+      scene.remove(beltMesh); beltMesh.geometry.dispose(); (beltMesh.material as THREE.Material).dispose(); beltMesh.dispose();
+      lagrangeMarkers.forEach(lm => { scene.remove(lm); lm.geometry.dispose(); (lm.material as THREE.Material).dispose(); });
+      scene.remove(starMarkerGroup);
+      scene.remove(oortCloud); oortCloud.geometry.dispose(); (oortCloud.material as THREE.Material).dispose();
+      starLabelEls.forEach(el => el.remove());
       ren.dispose();
       canvasRef.current?.removeChild(ren.domElement);
       audio.pause(); audio.src = '';
@@ -2584,7 +2990,7 @@ export default function App() {
           <div className="sat-layout">
             <div className="sat-sidebar">
               <div className="sat-col-title">分类</div>
-              {['beidou', 'weather', 'stations', 'starlink', 'gps', 'probes', 'science', 'resource', 'geodetic', 'visual'].map(tid => {
+              {['beidou', 'weather', 'stations', 'starlink', 'gps', 'probes', 'debris', 'science', 'resource', 'geodetic', 'visual'].map(tid => {
                 if (tid === 'probes') return (
                   <button key="probes" className={`sat-tab ${satTab === 'probes' ? 'active' : ''}`} onClick={() => setSatTab('probes')}>
                     <span className="sat-tab-row"><span className={`sat-tab-dot ${probesVisible ? '' : 'off'}`} style={{ background: 'linear-gradient(135deg, #81C784, #CE93D8, #FFB74D)' }} />探测器</span>
@@ -2596,7 +3002,7 @@ export default function App() {
                 return (
                   <button key={g.id} className={`sat-tab ${satTab === g.id ? 'active' : ''}`} onClick={() => setSatTab(g.id)}>
                     <span className="sat-tab-row"><span className={`sat-tab-dot ${satGroups[g.id] ? '' : 'off'}`} style={{ background: g.color }} />{g.labelCn}</span>
-                    <span className="sat-tab-count">{g.id === GID_STARLINK ? (starlinkTotal || satellites.filter(s => s.groupId === g.id).length) : satellites.filter(s => s.groupId === g.id).length} 颗</span>
+                    <span className="sat-tab-count">{g.id === GID_STARLINK ? (starlinkTotal || satellites.filter(s => s.groupId === g.id).length) : g.id === GID_DEBRIS ? (debrisTotal || satellites.filter(s => s.groupId === g.id).length) : satellites.filter(s => s.groupId === g.id).length} 颗</span>
                   </button>
                 );
               })}
@@ -2637,6 +3043,7 @@ export default function App() {
                   resource: '地球资源与对地观测卫星。包括Landsat、Sentinel、高分等系列，多在LEO太阳同步轨道。',
                   science: '科学研究卫星。包括哈勃、费米伽马射线等空间望远镜和科学实验平台。',
                   geodetic: '大地测量卫星。用于精密定位、地球重力场测量和地壳运动监测。',
+                  debris: `被追踪的太空垃圾碎片，来源于多次重大碰撞/反卫星试验事件：风云1C（1999）、宇宙2251/铱星33碰撞（2009）、宇宙1408（2021）、印度反卫星试验（2019）。共${debrisTotal || '约7,000'}个碎片通过 InstancedMesh 渲染。凯斯勒综合征的直观展示。`,
                 };
                 const refs: Record<string, string> = {
                   beidou: '数据来源：CelesTrak · celestrak.org',
@@ -2648,6 +3055,7 @@ export default function App() {
                   resource: '数据来源：CelesTrak · Earth Resources',
                   science: '数据来源：CelesTrak · Science',
                   geodetic: '数据来源：CelesTrak · Geodetic',
+                  debris: '数据来源：CelesTrak · 风云1C / Cosmos 2251 / Iridium 33 / Cosmos 1408 / Indian ASAT',
                 };
                 const groupSats = satellites.filter(s => s.groupId === g.id);
                 return (<>
@@ -2670,23 +3078,34 @@ export default function App() {
                       </div>
                     </div>
                   )}
+                  {/* Debris progress bar */}
+                  {g.id === GID_DEBRIS && debrisLoading && (
+                    <div style={{ marginBottom: 8 }}>
+                      <div style={{ fontSize: 10, color: 'var(--text-dim)', marginBottom: 4 }}>加载太空垃圾数据... {debrisProgress}%</div>
+                      <div style={{ width: '100%', height: 3, background: 'rgba(94,234,212,0.1)', borderRadius: 2 }}>
+                        <div style={{ width: `${debrisProgress}%`, height: '100%', background: '#EF4444', borderRadius: 2, transition: 'width .3s' }} />
+                      </div>
+                    </div>
+                  )}
                   <div className="sat-content-divider" />
                   <div style={{ fontSize: 9, color: 'var(--text-dim)', marginBottom: 4 }}>
                     {g.id === GID_STARLINK && starlinkTotal > 0
                       ? `预览 · 共 ${starlinkTotal} 颗通过 InstancedMesh 渲染`
+                      : g.id === GID_DEBRIS && debrisTotal > 0
+                      ? `预览 · 共 ${debrisTotal} 个碎片通过 InstancedMesh 渲染`
                       : `列表 · ${groupSats.length} 颗`}
                   </div>
                   <div className="sat-list">
                     {groupSats.length > 0 ? groupSats.map((s, li) => {
-                      const isStarlink = g.id === GID_STARLINK;
-                      const realIdx = isStarlink ? -1 : satellites.indexOf(s);
+                      const isInstancedGroup = g.id === GID_STARLINK || g.id === GID_DEBRIS;
+                      const realIdx = isInstancedGroup ? -1 : satellites.indexOf(s);
                       return (
                         <div key={li} className="sat-item" title="" onClick={() => { if (realIdx >= 0) (window as any).__focusSat(realIdx); }}>
                           <span className="sat-dot" style={{ background: s.color }} />
                           <span className="sat-name" title="">{getSatDisplayName(s.name, s.noradId)}</span>
                         </div>
                       );
-                    }) : (g.id === GID_STARLINK && !starlinkLoading ? <div className="sat-loading" style={{ fontSize: 10 }}>启用后加载全部正常运行的卫星</div> : <div className="sat-loading">加载中...</div>)}
+                    }) : (g.id === GID_STARLINK && !starlinkLoading ? <div className="sat-loading" style={{ fontSize: 10 }}>启用后加载全部正常运行的卫星</div> : g.id === GID_DEBRIS && !debrisLoading ? <div className="sat-loading" style={{ fontSize: 10 }}>启用后加载被追踪的太空垃圾碎片</div> : <div className="sat-loading">加载中...</div>)}
                   </div>
                 </>);
               })()}
