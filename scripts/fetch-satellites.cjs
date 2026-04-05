@@ -20,6 +20,12 @@ const GROUPS = [
   { id: 'resource', url: 'https://celestrak.org/NORAD/elements/gp.php?GROUP=resource&FORMAT=json' },
   { id: 'science', url: 'https://celestrak.org/NORAD/elements/gp.php?GROUP=science&FORMAT=json' },
   { id: 'geodetic', url: 'https://celestrak.org/NORAD/elements/gp.php?GROUP=geodetic&FORMAT=json' },
+  // Space debris groups — major fragmentation events
+  { id: 'debris-fengyun', url: 'https://celestrak.org/NORAD/elements/gp.php?GROUP=1999-025&FORMAT=json' },
+  { id: 'debris-cosmos', url: 'https://celestrak.org/NORAD/elements/gp.php?GROUP=cosmos-2251-debris&FORMAT=json' },
+  { id: 'debris-iridium', url: 'https://celestrak.org/NORAD/elements/gp.php?GROUP=iridium-33-debris&FORMAT=json' },
+  { id: 'debris-cosmos1408', url: 'https://celestrak.org/NORAD/elements/gp.php?GROUP=cosmos-1408-debris&FORMAT=json' },
+  { id: 'debris-indian', url: 'https://celestrak.org/NORAD/elements/gp.php?GROUP=indian-asat-debris&FORMAT=json' },
 ];
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
