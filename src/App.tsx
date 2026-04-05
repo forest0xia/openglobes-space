@@ -15,6 +15,9 @@ import { h2n, darkenHex, TRACKS_LIST, BASE, SPEED_PRESETS, TEX_FILES, procTex, P
 import { addAtmosphere, addSurfaceAtmo, PLANET_ATMO_CONFIGS } from './shaders/atmosphere';
 import { createSun, updateSun, type SunMeshes } from './shaders/sun';
 import { CfgStepper, VolStepper, CfgToggle } from './components/Controls';
+import { MISSION_PHASES, MISSION_INFO } from './data/lunarMission';
+import { computeMissionState, getTotalMissionDuration, getPhaseStartTime } from './simulation/lunarMission';
+import { createSpacecraftModel, createTrajectoryLine, appendTrailPoint, createExhaustEffect, isEngineBurning, getPhaseColor } from './simulation/lunarMissionVisuals';
 // ═══ Module-level constants (accessible in both useEffect and JSX) ═══
 const GID_STARLINK = 'starlink';
 const GID_STATIONS = 'stations';
@@ -69,6 +72,30 @@ export default function App() {
   const [debrisTotal, setDebrisTotal] = useState(0);
   const [probesVisible, setProbesVisible] = useState(false);
   const [satellites, setSatellites] = useState<SatRecord[]>([]);
+  // ═══ Lunar Mission ═══
+  const [lunarMissionActive, setLunarMissionActive] = useState(false);
+  const [lunarPhaseIndex, setLunarPhaseIndex] = useState(0);
+  const [lunarPhaseProgress, setLunarPhaseProgress] = useState(0);
+  const [lunarMissionElapsed, setLunarMissionElapsed] = useState(0);
+  const lunarMissionRef = useRef<{
+    active: boolean;
+    elapsed: number;
+    speed: number;           // mission time multiplier (e.g. 1000 = 1000x real time)
+    paused: boolean;
+    spacecraft: THREE.Group | null;
+    trail: ReturnType<typeof createTrajectoryLine> | null;
+    exhaust: THREE.Mesh | null;
+    trailPointCount: number;
+    lastTrailTime: number;
+    lastPhaseId: string;
+    rocketModel: THREE.Group | null;
+    moduleModel: THREE.Group | null;
+  }>({
+    active: false, elapsed: 0, speed: 5000, paused: false,
+    spacecraft: null, trail: null, exhaust: null,
+    trailPointCount: 0, lastTrailTime: 0, lastPhaseId: '',
+    rocketModel: null, moduleModel: null,
+  });
   const [satGroups, setSatGroups] = useState<Record<string, boolean>>({ beidou: true, weather: true, stations: false, starlink: false, gps: false, visual: false, resource: false, science: false, geodetic: false, debris: false });
 
   // Store refs accessible from inside useEffect
@@ -717,6 +744,59 @@ export default function App() {
       pm.userData = { ...pr, isProbe: true, probeIdx: i };
       scene.add(pm); probeMeshes.push(pm);
     });
+
+    // ═══════ LUNAR MISSION (Chang'e 5) ═══════
+    const lm = lunarMissionRef.current;
+    // Pre-create both spacecraft models (swap during phase transitions)
+    lm.rocketModel = createSpacecraftModel('launch');
+    lm.rocketModel.scale.setScalar(0.04);
+    lm.rocketModel.visible = false;
+    scene.add(lm.rocketModel);
+
+    lm.moduleModel = createSpacecraftModel('transfer');
+    lm.moduleModel.scale.setScalar(0.04);
+    lm.moduleModel.visible = false;
+    scene.add(lm.moduleModel);
+
+    lm.spacecraft = lm.rocketModel;  // start with rocket
+
+    // Trail
+    lm.trail = createTrajectoryLine();
+    lm.trail.line.visible = false;
+    scene.add(lm.trail.line);
+
+    // Exhaust effect
+    lm.exhaust = createExhaustEffect();
+    lm.exhaust.scale.setScalar(0.04);
+    scene.add(lm.exhaust);
+
+    // Window API for lunar mission control
+    (window as any).__startLunarMission = () => {
+      lm.active = true; lm.elapsed = 0; lm.paused = false;
+      lm.trailPointCount = 0; lm.lastTrailTime = 0; lm.lastPhaseId = '';
+      lm.trail!.line.geometry.setDrawRange(0, 0);
+      lm.trail!.line.visible = true;
+      setLunarMissionActive(true);
+      setLunarPhaseIndex(0);
+      setLunarPhaseProgress(0);
+      setLunarMissionElapsed(0);
+    };
+    (window as any).__stopLunarMission = () => {
+      lm.active = false;
+      if (lm.rocketModel) lm.rocketModel.visible = false;
+      if (lm.moduleModel) lm.moduleModel.visible = false;
+      if (lm.exhaust) lm.exhaust.visible = false;
+      if (lm.trail) lm.trail.line.visible = false;
+      setLunarMissionActive(false);
+    };
+    (window as any).__toggleLunarPause = () => { lm.paused = !lm.paused; };
+    (window as any).__setLunarSpeed = (s: number) => { lm.speed = s; };
+    (window as any).__jumpLunarPhase = (idx: number) => {
+      lm.elapsed = getPhaseStartTime(idx);
+      lm.trailPointCount = 0;
+      lm.trail!.line.geometry.setDrawRange(0, 0);
+    };
+    // __focusLunarMission is set up later (after focIdx/tT/tD are declared)
 
     // ═══════ SATELLITES ═══════
     const satMeshes: (THREE.Mesh | null)[] = [];
@@ -1395,6 +1475,16 @@ export default function App() {
       const effectiveFraction = isMobile ? fraction * Math.min(aspect, 1) : fraction;
       return Math.max(visualRadius / (effectiveFraction * tanHalf), visualRadius * 1.15);
     }
+
+    // Lunar mission focus — now that focIdx/tT/tD are declared
+    (window as any).__focusLunarMission = () => {
+      if (lm.spacecraft && lm.spacecraft.visible) {
+        focIdx = -1; focSatIdx = -1; focMoonMesh = null;
+        tT.copy(lm.spacecraft.position);
+        tD = 5;
+        (window as any).__closeAllPanels();
+      }
+    };
 
     function focusObj(i: number) {
       focIdx = i; focSatIdx = -1; focMoonMesh = null; const p = P[i];
@@ -2078,6 +2168,92 @@ export default function App() {
         }
       });
 
+      // ═══ Update lunar mission spacecraft + trail ═══
+      if (lm.active) {
+        if (!lm.paused) lm.elapsed += dt * lm.speed;
+        const totalDur = getTotalMissionDuration();
+        if (lm.elapsed > totalDur) { lm.elapsed = totalDur; }
+
+        const earthPos3 = meshes[EARTH_IDX].position;
+        const moonPos3 = moonMesh ? moonMesh.position : earthPos3;
+        const eScale = baseScale(EARTH_IDX);
+
+        const ms = computeMissionState(
+          lm.elapsed,
+          { x: earthPos3.x, y: earthPos3.y, z: earthPos3.z },
+          { x: moonPos3.x, y: moonPos3.y, z: moonPos3.z },
+          eScale,
+        );
+
+        // Swap spacecraft model when phase changes between rocket and module
+        const isRocketPhase = ms.phase.id === 'launch' || ms.phase.id === 'parking' || ms.phase.id === 'tli';
+        if (isRocketPhase && lm.spacecraft !== lm.rocketModel) {
+          if (lm.moduleModel) lm.moduleModel.visible = false;
+          lm.spacecraft = lm.rocketModel;
+        } else if (!isRocketPhase && lm.spacecraft !== lm.moduleModel) {
+          if (lm.rocketModel) lm.rocketModel.visible = false;
+          lm.spacecraft = lm.moduleModel;
+        }
+
+        if (lm.spacecraft) {
+          lm.spacecraft.visible = true;
+          lm.spacecraft.position.set(ms.position.x, ms.position.y, ms.position.z);
+          // Scale based on distance to Earth for visibility
+          const distToEarth = Math.sqrt(
+            (ms.position.x - earthPos3.x) ** 2 +
+            (ms.position.y - earthPos3.y) ** 2 +
+            (ms.position.z - earthPos3.z) ** 2
+          );
+          const scaleVal = Math.max(0.02, Math.min(0.15, distToEarth * 0.005)) * eScale;
+          lm.spacecraft.scale.setScalar(scaleVal);
+
+          // Point rocket upward during launch, otherwise orient along trajectory
+          if (ms.phase.id === 'launch') {
+            lm.spacecraft.rotation.set(0, 0, 0);
+          } else {
+            lm.spacecraft.rotation.y = Math.atan2(
+              ms.position.z - earthPos3.z,
+              ms.position.x - earthPos3.x
+            );
+          }
+        }
+
+        // Exhaust effect
+        if (lm.exhaust) {
+          const burning = isEngineBurning(ms.phase.id);
+          lm.exhaust.visible = burning;
+          if (burning && lm.spacecraft) {
+            lm.exhaust.position.copy(lm.spacecraft.position);
+            lm.exhaust.scale.copy(lm.spacecraft.scale);
+            // Flicker
+            (lm.exhaust.material as THREE.MeshBasicMaterial).opacity = 0.5 + Math.random() * 0.3;
+          }
+        }
+
+        // Trail emission — add a point every 0.5% of mission progress
+        if (lm.trail && lm.elapsed - lm.lastTrailTime > totalDur * 0.002) {
+          const phaseColor = getPhaseColor(ms.phase.id);
+          lm.trailPointCount = appendTrailPoint(
+            lm.trail, lm.trailPointCount,
+            ms.position.x, ms.position.y, ms.position.z,
+            phaseColor.r, phaseColor.g, phaseColor.b,
+          );
+          lm.lastTrailTime = lm.elapsed;
+        }
+
+        // Update React state (throttled to every 10 frames)
+        if (frameCount % 10 === 0) {
+          setLunarPhaseIndex(ms.phaseIndex);
+          setLunarPhaseProgress(ms.phaseProgress);
+          setLunarMissionElapsed(ms.missionElapsed);
+        }
+
+        // Auto-stop when mission completes
+        if (ms.completed && !lm.paused) {
+          lm.paused = true;
+        }
+      }
+
       // ═══ Update satellite positions + trails ═══
       const sd = satDataRef.current;
       // Only throttle SGP4 at extreme speeds; smooth trails need every-frame updates
@@ -2674,6 +2850,10 @@ export default function App() {
       if (moonMesh) { scene.remove(moonMesh); moonMesh.geometry.dispose(); (moonMesh.material as THREE.Material).dispose(); }
       // Dispose probe meshes
       probeMeshes.forEach(m => { m.traverse(child => { if ((child as THREE.Mesh).geometry) (child as THREE.Mesh).geometry.dispose(); }); scene.remove(m); });
+      // Dispose lunar mission
+      [lm.rocketModel, lm.moduleModel].forEach(m => { if (m) { m.traverse(child => { if ((child as THREE.Mesh).geometry) (child as THREE.Mesh).geometry.dispose(); }); scene.remove(m); } });
+      if (lm.trail) { scene.remove(lm.trail.line); lm.trail.line.geometry.dispose(); (lm.trail.line.material as THREE.Material).dispose(); }
+      if (lm.exhaust) { scene.remove(lm.exhaust); lm.exhaust.geometry.dispose(); (lm.exhaust.material as THREE.Material).dispose(); }
       // Dispose glow meshes
       glowMeshes.forEach(gm => { gm.geometry.dispose(); (gm.material as THREE.Material).dispose(); });
       // Dispose stars, milky way, deep space
@@ -3082,6 +3262,119 @@ export default function App() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Lunar Mission Panel */}
+      {lunarMissionActive && !uiHidden && introDone && (
+        <div className="lunar-panel">
+          <div className="lunar-panel-header">
+            <div className="lunar-panel-title">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#FFD54F" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3a9 9 0 1 0 9 9"/><path d="M12 3v4l3-1"/></svg>
+              <span>{MISSION_INFO.nameCn} · {MISSION_INFO.rocketCn}</span>
+            </div>
+            <button className="info-close" onClick={() => (window as any).__stopLunarMission()}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+          </div>
+
+          {/* Mission progress bar */}
+          <div className="lunar-progress-bar">
+            {MISSION_PHASES.map((phase, i) => {
+              const totalDur = getTotalMissionDuration();
+              const phaseStart = getPhaseStartTime(i);
+              const widthPct = (phase.durationSeconds / totalDur) * 100;
+              return (
+                <div
+                  key={phase.id}
+                  className={`lunar-phase-seg ${i === lunarPhaseIndex ? 'active' : ''} ${i < lunarPhaseIndex ? 'done' : ''}`}
+                  style={{
+                    width: `${Math.max(widthPct, 2)}%`,
+                    background: i <= lunarPhaseIndex ? phase.color : 'rgba(255,255,255,0.1)',
+                    opacity: i === lunarPhaseIndex ? 1 : i < lunarPhaseIndex ? 0.6 : 0.3,
+                  }}
+                  title={phase.nameCn}
+                  onClick={() => (window as any).__jumpLunarPhase(i)}
+                />
+              );
+            })}
+          </div>
+
+          {/* Current phase info */}
+          <div className="lunar-phase-info">
+            <div className="lunar-phase-name" style={{ color: MISSION_PHASES[lunarPhaseIndex]?.color }}>
+              {lunarPhaseIndex + 1}/{MISSION_PHASES.length} · {MISSION_PHASES[lunarPhaseIndex]?.nameCn}
+            </div>
+            <div className="lunar-phase-desc">
+              {MISSION_PHASES[lunarPhaseIndex]?.descriptionCn}
+            </div>
+            {MISSION_PHASES[lunarPhaseIndex]?.deltaVMs && (
+              <div className="lunar-phase-stats">
+                <span>Delta-V: {(MISSION_PHASES[lunarPhaseIndex].deltaVMs! / 1000).toFixed(1)} km/s</span>
+                <span>速度: {MISSION_PHASES[lunarPhaseIndex].velocityKms.toFixed(2)} km/s</span>
+              </div>
+            )}
+          </div>
+
+          {/* Controls */}
+          <div className="lunar-controls">
+            <button className="lunar-btn" onClick={() => (window as any).__toggleLunarPause()}>
+              {lunarMissionRef.current.paused
+                ? <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>
+                : <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><line x1="6" y1="4" x2="6" y2="20"/><line x1="18" y1="4" x2="18" y2="20"/></svg>
+              }
+            </button>
+            <button className="lunar-btn" onClick={() => { const idx = Math.max(0, lunarPhaseIndex - 1); (window as any).__jumpLunarPhase(idx); }}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="15,18 9,12 15,6"/></svg>
+            </button>
+            <button className="lunar-btn" onClick={() => { const idx = Math.min(MISSION_PHASES.length - 1, lunarPhaseIndex + 1); (window as any).__jumpLunarPhase(idx); }}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="9,6 15,12 9,18"/></svg>
+            </button>
+            <select
+              className="lunar-speed-select"
+              value={lunarMissionRef.current.speed}
+              onChange={(e) => (window as any).__setLunarSpeed(Number(e.target.value))}
+            >
+              <option value={1000}>1000x</option>
+              <option value={2000}>2000x</option>
+              <option value={5000}>5000x</option>
+              <option value={10000}>10000x</option>
+              <option value={50000}>50000x</option>
+            </select>
+            <button className="lunar-btn" onClick={() => (window as any).__focusLunarMission()} title="追踪航天器">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v4m0 12v4m-10-10h4m12 0h4"/></svg>
+            </button>
+          </div>
+
+          {/* Mission elapsed time */}
+          <div className="lunar-time">
+            T+ {(() => {
+              const h = Math.floor(lunarMissionElapsed / 3600);
+              const m = Math.floor((lunarMissionElapsed % 3600) / 60);
+              if (h >= 24) return `${(h / 24).toFixed(1)}天`;
+              return `${h}时${m.toString().padStart(2, '0')}分`;
+            })()}
+            <span style={{ marginLeft: 8, opacity: 0.5 }}>
+              ({(lunarMissionElapsed / getTotalMissionDuration() * 100).toFixed(1)}%)
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* Lunar Mission Launch Button (when not active) */}
+      {!lunarMissionActive && !uiHidden && introDone && (
+        <button
+          className="lunar-launch-btn"
+          onClick={() => (window as any).__startLunarMission()}
+          title="启动嫦娥五号登月任务模拟"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/>
+            <path d="M12 15l-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/>
+            <path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/>
+            <path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/>
+          </svg>
+          登月
+        </button>
       )}
 
       {/* Toast popup */}

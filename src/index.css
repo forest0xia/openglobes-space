@@ -459,3 +459,69 @@ canvas{display:block;position:fixed;inset:0;z-index:1}
 @media(max-width:768px){
   .mobile-nav-panel{display:block}
 }
+
+/* ═══════ Lunar Mission UI ═══════ */
+.lunar-launch-btn{
+  position:fixed;bottom:70px;left:50%;transform:translateX(-50%);z-index:100;
+  display:flex;align-items:center;gap:6px;
+  padding:8px 16px;border:1px solid rgba(255,213,79,0.3);border-radius:20px;
+  background:rgba(255,213,79,0.08);color:#FFD54F;
+  font-family:var(--font-cn);font-size:12px;cursor:pointer;
+  backdrop-filter:blur(8px);transition:all .3s;
+}
+.lunar-launch-btn:hover{
+  background:rgba(255,213,79,0.18);border-color:rgba(255,213,79,0.5);
+  box-shadow:0 0 20px rgba(255,213,79,0.15);
+}
+
+.lunar-panel{
+  position:fixed;bottom:70px;left:50%;transform:translateX(-50%);z-index:200;
+  width:min(460px, calc(100vw - 32px));
+  background:var(--glass);border:1px solid rgba(255,213,79,0.15);
+  border-radius:12px;backdrop-filter:blur(12px);
+  padding:12px 14px;font-family:var(--font-cn);
+  box-shadow:0 4px 30px rgba(0,0,0,0.4);
+}
+.lunar-panel-header{
+  display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;
+}
+.lunar-panel-title{
+  display:flex;align-items:center;gap:8px;
+  font-size:13px;font-weight:500;color:#FFD54F;letter-spacing:0.5px;
+}
+.lunar-progress-bar{
+  display:flex;height:6px;border-radius:3px;overflow:hidden;gap:1px;margin-bottom:10px;cursor:pointer;
+}
+.lunar-phase-seg{
+  flex-shrink:0;min-width:3px;border-radius:2px;transition:opacity .3s;
+}
+.lunar-phase-seg.active{
+  box-shadow:0 0 6px currentColor;
+}
+.lunar-phase-info{margin-bottom:8px;}
+.lunar-phase-name{font-size:12px;font-weight:500;margin-bottom:4px;}
+.lunar-phase-desc{font-size:10px;color:var(--text-dim);line-height:1.5;opacity:0.8;}
+.lunar-phase-stats{
+  display:flex;gap:16px;margin-top:4px;font-size:10px;color:var(--glow);
+  font-family:var(--font-mono);
+}
+.lunar-controls{
+  display:flex;align-items:center;gap:6px;margin-bottom:6px;
+}
+.lunar-btn{
+  display:flex;align-items:center;justify-content:center;
+  width:28px;height:28px;border:1px solid var(--glass-edge);border-radius:6px;
+  background:transparent;color:var(--text);cursor:pointer;
+  transition:all .2s;
+}
+.lunar-btn:hover{background:var(--glow-dim);border-color:var(--glow);color:var(--glow);}
+.lunar-speed-select{
+  padding:4px 8px;border:1px solid var(--glass-edge);border-radius:6px;
+  background:transparent;color:var(--text);font-size:10px;
+  font-family:var(--font-mono);cursor:pointer;
+}
+.lunar-speed-select option{background:var(--deep);color:var(--text);}
+.lunar-time{
+  font-size:11px;color:var(--text-dim);font-family:var(--font-mono);
+  text-align:center;
+}
