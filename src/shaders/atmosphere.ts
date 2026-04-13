@@ -156,7 +156,7 @@ interface PlanetAtmoConfig {
 export const PLANET_ATMO_CONFIGS: Record<string, PlanetAtmoConfig> = {
   sun: {
     atmosphere: {
-      scale: 1.15, dayColor: [1, .85, .3], twilightColor: [1, .4, .1],
+      scale: 1.074, dayColor: [1, .85, .3], twilightColor: [1, .4, .1],
       fresnelLow: 0.5, fresnelPow: 2.0, sunFadeMin: -1, sunFadeMax: 1, isSun: true,
     },
   },

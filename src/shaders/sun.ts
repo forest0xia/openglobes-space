@@ -93,11 +93,12 @@ const surfaceFS = /* glsl */ `
     float activeRegion=smoothstep(.4,.8,n1+n3*.5)*.3;
     color+=vec3(1.,.9,.6)*activeRegion;
 
-    // Limb: golden edge, darker center
+    // Limb brightening: intense yellow-white halo at edge
     float fresnel=1.-max(dot(vNormal,vViewDir),0.);
-    color+=vec3(1.,.7,.2)*pow(fresnel,2.5)*.6;
-    color+=vec3(1.,.65,.15)*pow(fresnel,1.2)*.3;
-    color*=.5+.5*pow(1.-fresnel*.5,.6);
+    color+=vec3(1.,.85,.3)*pow(fresnel,1.5)*1.08;
+    color+=vec3(1.,.95,.7)*pow(fresnel,3.)*.72;
+    color+=vec3(1.,1.,.9)*pow(fresnel,6.)*1.35;
+    color*=.65+.35*fresnel;
     color*=1.3;
     gl_FragColor=vec4(color,1.);
   }
@@ -153,16 +154,50 @@ const promFS = /* glsl */ `
   }
 `;
 
-// ═══ OUTER GLOW ═══
+// ═══ OUTER GLOW + STRUCTURED CORONA RAYS + PROMINENCES ═══
 const glowVS=/* glsl */`varying vec2 vUv;void main(){vUv=uv;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}`;
 const glowFS = /* glsl */ `
+  uniform float uTime;
   varying vec2 vUv;
+  ${NOISE}
   void main(){
-    vec2 c=vUv-.5;float d=length(c)*2.;
-    float g=exp(-d*1.8)*.12+exp(-d*4.)*.04;
-    g*=smoothstep(.14,.24,d);
-    vec3 col=mix(vec3(1.,.85,.5),vec3(1.,.35,.08),d);
-    gl_FragColor=vec4(col*g,g);
+    vec2 c=vUv-.5; float d=length(c)*2.; float T=uTime;
+    float sR=d*4.; float angle=atan(c.y,c.x);
+
+    // Soft outer glow
+    float softGlow=exp(-d*1.8)*.12+exp(-d*4.)*.04;
+    softGlow*=smoothstep(.14,.24,d);
+
+    // Structured corona rays (proportional to sun)
+    float innerM=smoothstep(1.,1.02,sR);
+    float extN=fbm(vec3(angle*1.5,T*.06,0.))*.5+.5;
+    float maxExt=1.15+extN*.25;
+    float outerM=1.-smoothstep(maxExt*.7,maxExt,sR);
+    float n1=fbm(vec3(angle*3.5,sR+T*.04,T*.08));
+    float n2=fbm(vec3(angle*7.+2.,sR*1.2,T*.06+5.));
+    float rays=smoothstep(-.1,.4,n1)*.7+smoothstep(.1,.6,n2)*.3;
+    float radFade=exp(-(sR-1.)*2.2);
+    float corona=rays*radFade*innerM*outerM*.9;
+
+    // Prominences — slow drift, compact arcs
+    float pa1=snoise(vec3(T*.005,1.5,0.))*6.28;
+    float pa2=snoise(vec3(T*.005,4.5,0.))*6.28;
+    float pa3=snoise(vec3(T*.005,8.,0.))*6.28;
+    float ad1=mod(angle-pa1+3.14159,6.28318)-3.14159;
+    float ad2=mod(angle-pa2+3.14159,6.28318)-3.14159;
+    float ad3=mod(angle-pa3+3.14159,6.28318)-3.14159;
+    float arcH1=1.+.038*max(0.,cos(ad1*2.));
+    float arcH2=1.+.045*max(0.,cos(ad2*1.8));
+    float arcH3=1.+.03*max(0.,cos(ad3*2.5));
+    float pr1=exp(-ad1*ad1*2.)*exp(-pow(sR-arcH1,2.)*50.);
+    float pr2=exp(-ad2*ad2*1.5)*exp(-pow(sR-arcH2,2.)*40.);
+    float pr3=exp(-ad3*ad3*2.5)*exp(-pow(sR-arcH3,2.)*60.);
+    float proms=(pr1+pr2+pr3)*innerM*.4;
+
+    // Combine
+    float total=softGlow+corona+proms;
+    vec3 col=mix(vec3(1.,.35,.08),vec3(1.,.85,.5),clamp(radFade*1.5,0.,1.));
+    gl_FragColor=vec4(col*total,total);
   }
 `;
 
@@ -268,6 +303,7 @@ export function createSun(radius: number, sunTexture: THREE.Texture): SunMeshes 
   const glow = new THREE.Mesh(
     new THREE.PlaneGeometry(radius * 8, radius * 8),
     new THREE.ShaderMaterial({
+      uniforms: { uTime: { value: 0 } },
       vertexShader: glowVS, fragmentShader: glowFS,
       transparent: true, depthWrite: false,
       blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
@@ -281,6 +317,7 @@ export function createSun(radius: number, sunTexture: THREE.Texture): SunMeshes 
 export function updateSun(sun: SunMeshes, time: number, camera: THREE.Camera): void {
   (sun.surface.material as THREE.ShaderMaterial).uniforms.uTime.value = time;
   (sun.corona.material as THREE.ShaderMaterial).uniforms.uTime.value = time;
+  (sun.glow.material as THREE.ShaderMaterial).uniforms.uTime.value = time;
   sun.corona.position.copy(sun.surface.position);
   sun.glow.position.copy(sun.surface.position);
   sun.glow.lookAt(camera.position);

@@ -16,3 +16,4 @@ public/models/jwst.glb
 public/models/perseverance.glb
 public/models/juno.glb
 public/models/hubble.glb
+.claude/settings.local.json

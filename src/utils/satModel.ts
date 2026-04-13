@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 const LOCAL_BASE = import.meta.env.BASE_URL;
 const CDN_BASE = 'https://esymcblyhmeuiudpmdff.supabase.co/storage/v1/object/public/og-space-3dmodels/';
@@ -142,7 +143,7 @@ function createProceduralSatellite(color: number): THREE.Group {
  * Starlink satellite: flat-panel body with large single solar array.
  * Resembles the real Starlink v2 Mini (flat rectangular chassis + one large panel).
  */
-function createProceduralStarlink(color: number): THREE.Group {
+function createProceduralStarlink(_color: number): THREE.Group {
   const group = new THREE.Group();
   const bodyMat = new THREE.MeshStandardMaterial({ color: 0xcccccc, metalness: 0.7, roughness: 0.3, emissive: new THREE.Color(0x333333), emissiveIntensity: 0.3 });
   const panelMat = new THREE.MeshStandardMaterial({ color: 0x1a2d5a, metalness: 0.85, roughness: 0.15, emissive: new THREE.Color(0x0d1a3d), emissiveIntensity: 0.4 });
@@ -188,7 +189,7 @@ function createProceduralStarlink(color: number): THREE.Group {
  * Space debris: irregular fragment with torn panel and bent metal.
  * Looks like a broken satellite piece tumbling in orbit.
  */
-function createProceduralDebris(color: number): THREE.Group {
+function createProceduralDebris(_color: number): THREE.Group {
   const group = new THREE.Group();
   const metalMat = new THREE.MeshStandardMaterial({ color: 0x999999, metalness: 0.8, roughness: 0.5, emissive: new THREE.Color(0x222222), emissiveIntensity: 0.3 });
   const damagedMat = new THREE.MeshStandardMaterial({ color: 0x665544, metalness: 0.4, roughness: 0.8, emissive: new THREE.Color(0x221100), emissiveIntensity: 0.2 });
@@ -257,4 +258,62 @@ function centerGroup(group: THREE.Group) {
   const box = new THREE.Box3().setFromObject(group);
   const center = new THREE.Vector3(); box.getCenter(center);
   group.children.forEach(c => c.position.sub(center));
+}
+
+/**
+ * Merge all child meshes of a Group into a single BufferGeometry with baked vertex colors.
+ * The returned geometry can be used with InstancedMesh for efficient batch rendering
+ * while preserving the detailed shape and per-part coloring of the procedural model.
+ */
+function mergeGroupToGeo(group: THREE.Group, targetSize: number): THREE.BufferGeometry {
+  const geos: THREE.BufferGeometry[] = [];
+
+  group.updateMatrixWorld(true);
+  group.traverse(child => {
+    if (!(child as THREE.Mesh).isMesh) return;
+    const mesh = child as THREE.Mesh;
+    let geo = mesh.geometry.clone();
+    if (geo.index) geo = geo.toNonIndexed();
+    geo.applyMatrix4(mesh.matrixWorld);
+    // Bake material color as vertex colors
+    const mat = mesh.material as THREE.MeshStandardMaterial;
+    const col = mat.color ?? new THREE.Color(0x888888);
+    const count = geo.attributes.position.count;
+    const colors = new Float32Array(count * 3);
+    for (let i = 0; i < count; i++) {
+      colors[i * 3] = col.r;
+      colors[i * 3 + 1] = col.g;
+      colors[i * 3 + 2] = col.b;
+    }
+    geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    geos.push(geo);
+  });
+
+  const merged = mergeGeometries(geos, false)!;
+  // Normalize to targetSize
+  merged.computeBoundingBox();
+  const box = merged.boundingBox!;
+  const size = new THREE.Vector3();
+  box.getSize(size);
+  const maxDim = Math.max(size.x, size.y, size.z);
+  const scale = targetSize / maxDim;
+  merged.scale(scale, scale, scale);
+  // Center at origin
+  merged.computeBoundingBox();
+  const center = new THREE.Vector3();
+  merged.boundingBox!.getCenter(center);
+  merged.translate(-center.x, -center.y, -center.z);
+  return merged;
+}
+
+/** Merged Starlink geometry for InstancedMesh (flat body + solar panel + antennas, vertex colored) */
+export function createStarlinkInstanceGeo(dotRadius: number): THREE.BufferGeometry {
+  const group = createProceduralStarlink(0);
+  return mergeGroupToGeo(group, dotRadius * 3);
+}
+
+/** Merged debris geometry for InstancedMesh (broken fragment + torn panel + strut, vertex colored) */
+export function createDebrisInstanceGeo(dotRadius: number): THREE.BufferGeometry {
+  const group = createProceduralDebris(0);
+  return mergeGroupToGeo(group, dotRadius * 2);
 }

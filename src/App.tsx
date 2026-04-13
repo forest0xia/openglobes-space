@@ -4,7 +4,7 @@ import { PLANETS } from './data/planets';
 import { NATURAL_MOONS, MOON_COUNTS } from './data/moons';
 import { PROBES } from './data/probesMeta';
 import { fetchAllSatellites, fetchStarlinkSatellites, fetchDebrisSatellites, getSatPositionECI, eciToScene, SAT_GROUPS, type SatRecord, gstime } from './services/celestrak';
-import { createSatelliteModel } from './utils/satModel'; // only used for focused satellite detail model
+import { createSatelliteModel, createStarlinkInstanceGeo, createDebrisInstanceGeo } from './utils/satModel';
 import { createProbeModel } from './utils/probeModels';
 import { createTrailLine, TRAIL_N } from './utils/SatTrail';
 import { getSatDisplayName } from './data/satNames';
@@ -15,9 +15,9 @@ import { h2n, darkenHex, TRACKS_LIST, BASE, SPEED_PRESETS, TEX_FILES, procTex, P
 import { addAtmosphere, addSurfaceAtmo, PLANET_ATMO_CONFIGS } from './shaders/atmosphere';
 import { createSun, updateSun, type SunMeshes } from './shaders/sun';
 import { CfgStepper, VolStepper, CfgToggle } from './components/Controls';
-import { MISSION_PHASES, MISSION_INFO } from './data/lunarMission';
+import { MISSION_PHASES, MISSION_INFO, PHASE_AUTO_SPEED, PHASE_CAMERA_DISTANCE, LAUNCH_SUB_PHASES } from './data/lunarMission';
 import { computeMissionState, getTotalMissionDuration, getPhaseStartTime } from './simulation/lunarMission';
-import { createSpacecraftModel, createTrajectoryLine, appendTrailPoint, createExhaustEffect, isEngineBurning, getPhaseColor } from './simulation/lunarMissionVisuals';
+import { createSpacecraftModel, createTrajectoryLine, appendTrailPoint, createExhaustEffect, isEngineBurning, getPhaseColor, ROCKET_BASE_SCALE, MODULE_BASE_SCALE, SPACECRAFT_MIN_SCALE, SPACECRAFT_MAX_SCALE } from './simulation/lunarMissionVisuals';
 // ═══ Module-level constants (accessible in both useEffect and JSX) ═══
 const GID_STARLINK = 'starlink';
 const GID_STATIONS = 'stations';
@@ -75,8 +75,9 @@ export default function App() {
   // ═══ Lunar Mission ═══
   const [lunarMissionActive, setLunarMissionActive] = useState(false);
   const [lunarPhaseIndex, setLunarPhaseIndex] = useState(0);
-  const [lunarPhaseProgress, setLunarPhaseProgress] = useState(0);
+  const [_lunarPhaseProgress, setLunarPhaseProgress] = useState(0);
   const [lunarMissionElapsed, setLunarMissionElapsed] = useState(0);
+  const [lunarSubPhase, setLunarSubPhase] = useState<{ nameCn: string; descriptionCn: string } | null>(null);
   const lunarMissionRef = useRef<{
     active: boolean;
     elapsed: number;
@@ -84,17 +85,21 @@ export default function App() {
     paused: boolean;
     spacecraft: THREE.Group | null;
     trail: ReturnType<typeof createTrajectoryLine> | null;
-    exhaust: THREE.Mesh | null;
+    exhaust: THREE.Group | null;
     trailPointCount: number;
     lastTrailTime: number;
     lastPhaseId: string;
     rocketModel: THREE.Group | null;
     moduleModel: THREE.Group | null;
+    autoSpeed: boolean;
+    focusLunar: boolean;
+    lastSubPhaseIdx: number;
   }>({
-    active: false, elapsed: 0, speed: 5000, paused: false,
+    active: false, elapsed: 0, speed: 50, paused: false,
     spacecraft: null, trail: null, exhaust: null,
     trailPointCount: 0, lastTrailTime: 0, lastPhaseId: '',
     rocketModel: null, moduleModel: null,
+    autoSpeed: true, focusLunar: false, lastSubPhaseIdx: -1,
   });
   const [satGroups, setSatGroups] = useState<Record<string, boolean>>({ beidou: true, weather: true, stations: false, starlink: false, gps: false, visual: false, resource: false, science: false, geodetic: false, debris: false });
 
@@ -102,8 +107,8 @@ export default function App() {
   const satDataRef = useRef<{
     sats: SatRecord[]; meshes: (THREE.Mesh | null)[]; groups: Record<string, boolean>;
     orbitLines: THREE.Line[];
-    starlinkMesh?: THREE.InstancedMesh; starlinkSats?: SatRecord[]; starlinkPositions?: Float32Array;
-    debrisMesh?: THREE.InstancedMesh; debrisSats?: SatRecord[]; debrisPositions?: Float32Array;
+    starlinkMesh?: THREE.InstancedMesh; starlinkMarkers?: THREE.Points; starlinkSats?: SatRecord[]; starlinkPositions?: Float32Array;
+    debrisMesh?: THREE.InstancedMesh; debrisMarkers?: THREE.Points; debrisSats?: SatRecord[]; debrisPositions?: Float32Array;
   }>({ sats: [], meshes: [], groups: { beidou: true, weather: true, stations: false, starlink: false, gps: false, visual: false, resource: false, science: false, geodetic: false, debris: false }, orbitLines: [] });
 
   useEffect(() => {
@@ -145,6 +150,8 @@ export default function App() {
       showOrbits: true,
       showHelpers: true,
       showTrails: true,
+      showSlMarkers: true,
+      showDbMarkers: true,
     };
     const scene = new THREE.Scene();
     const isMobile = innerWidth < 768 || /Mobi|Android/i.test(navigator.userAgent);
@@ -749,12 +756,12 @@ export default function App() {
     const lm = lunarMissionRef.current;
     // Pre-create both spacecraft models (swap during phase transitions)
     lm.rocketModel = createSpacecraftModel('launch');
-    lm.rocketModel.scale.setScalar(0.04);
+    lm.rocketModel.scale.setScalar(ROCKET_BASE_SCALE);
     lm.rocketModel.visible = false;
     scene.add(lm.rocketModel);
 
     lm.moduleModel = createSpacecraftModel('transfer');
-    lm.moduleModel.scale.setScalar(0.04);
+    lm.moduleModel.scale.setScalar(MODULE_BASE_SCALE);
     lm.moduleModel.visible = false;
     scene.add(lm.moduleModel);
 
@@ -767,34 +774,64 @@ export default function App() {
 
     // Exhaust effect
     lm.exhaust = createExhaustEffect();
-    lm.exhaust.scale.setScalar(0.04);
+    lm.exhaust.scale.setScalar(ROCKET_BASE_SCALE);
     scene.add(lm.exhaust);
 
     // Window API for lunar mission control
+    let savedSpdIdx = 0; // saved global speed index before mission
     (window as any).__startLunarMission = () => {
       lm.active = true; lm.elapsed = 0; lm.paused = false;
+      lm.autoSpeed = true; lm.speed = PHASE_AUTO_SPEED['launch'] ?? 50;
       lm.trailPointCount = 0; lm.lastTrailTime = 0; lm.lastPhaseId = '';
+      lm.lastSubPhaseIdx = -1;
       lm.trail!.line.geometry.setDrawRange(0, 0);
       lm.trail!.line.visible = true;
+      lm.focusLunar = true;
+      // Pause the solar system so planets don't fly around during mission
+      savedSpdIdx = spdIdx;
+      spdIdx = 0; spd = SPEED_PRESETS[0].v; updSpd();
       setLunarMissionActive(true);
       setLunarPhaseIndex(0);
       setLunarPhaseProgress(0);
       setLunarMissionElapsed(0);
+      setLunarSubPhase(null);
+      // Auto-focus camera on spacecraft (deferred to next frame when position is computed)
+      requestAnimationFrame(() => (window as any).__focusLunarMission?.());
     };
     (window as any).__stopLunarMission = () => {
       lm.active = false;
+      lm.focusLunar = false;
       if (lm.rocketModel) lm.rocketModel.visible = false;
       if (lm.moduleModel) lm.moduleModel.visible = false;
       if (lm.exhaust) lm.exhaust.visible = false;
       if (lm.trail) lm.trail.line.visible = false;
+      // Restore the global speed
+      spdIdx = savedSpdIdx; spd = SPEED_PRESETS[spdIdx].v; updSpd();
       setLunarMissionActive(false);
     };
     (window as any).__toggleLunarPause = () => { lm.paused = !lm.paused; };
-    (window as any).__setLunarSpeed = (s: number) => { lm.speed = s; };
+    (window as any).__setLunarSpeed = (s: number | 'auto') => {
+      if (s === 'auto') {
+        lm.autoSpeed = true;
+      } else {
+        lm.autoSpeed = false;
+        lm.speed = s;
+      }
+    };
     (window as any).__jumpLunarPhase = (idx: number) => {
       lm.elapsed = getPhaseStartTime(idx);
       lm.trailPointCount = 0;
+      lm.lastSubPhaseIdx = -1;
       lm.trail!.line.geometry.setDrawRange(0, 0);
+      // Reset rocket model parts visibility
+      if (lm.rocketModel) {
+        lm.rocketModel.children.forEach(c => {
+          c.visible = c.name !== 'upper_nozzle';
+        });
+        const un = lm.rocketModel.getObjectByName('upper_nozzle');
+        if (un) un.visible = false;
+      }
+      setLunarSubPhase(null);
     };
     // __focusLunarMission is set up later (after focIdx/tT/tD are declared)
 
@@ -951,9 +988,15 @@ export default function App() {
       if (prog) prog.textContent = '就绪';
     }); // delay: intro (2.2s) + Earth zoom (1.5s) + buffer
 
-    // Dispose Starlink InstancedMesh resources
+    // Dispose Starlink InstancedMesh + marker resources
     function disposeStarlink() {
       const sd = satDataRef.current;
+      if (sd.starlinkMarkers) {
+        scene.remove(sd.starlinkMarkers);
+        sd.starlinkMarkers.geometry.dispose();
+        (sd.starlinkMarkers.material as THREE.Material).dispose();
+        sd.starlinkMarkers = undefined;
+      }
       if (sd.starlinkMesh) {
         scene.remove(sd.starlinkMesh);
         sd.starlinkMesh.geometry.dispose();
@@ -965,9 +1008,15 @@ export default function App() {
       sd.starlinkPositions = undefined;
     }
 
-    // Dispose Debris InstancedMesh resources
+    // Dispose Debris InstancedMesh + marker resources
     function disposeDebris() {
       const sd = satDataRef.current;
+      if (sd.debrisMarkers) {
+        scene.remove(sd.debrisMarkers);
+        sd.debrisMarkers.geometry.dispose();
+        (sd.debrisMarkers.material as THREE.Material).dispose();
+        sd.debrisMarkers = undefined;
+      }
       if (sd.debrisMesh) {
         scene.remove(sd.debrisMesh);
         sd.debrisMesh.geometry.dispose();
@@ -977,6 +1026,26 @@ export default function App() {
       }
       sd.debrisSats = undefined;
       sd.debrisPositions = undefined;
+    }
+
+    // Fixed 12px screen-space ring marker for satellite constellations
+    const MARKER_VS = /* glsl */ `void main(){vec4 mv=modelViewMatrix*vec4(position,1.);gl_Position=projectionMatrix*mv;gl_PointSize=12.0;}`;
+    const MARKER_FS = /* glsl */ `uniform vec3 uColor;void main(){vec2 c=gl_PointCoord-0.5;float d=length(c)*2.;float ring=smoothstep(.6,.7,d)*(1.-smoothstep(.85,1.,d));float dot=exp(-d*d*10.)*.3;float a=ring+dot;if(a<.02)discard;gl_FragColor=vec4(uColor*(ring*1.2+dot),a*.9);}`;
+    function createMarkerPoints(positions: Float32Array, count: number, color: THREE.Color): THREE.Points {
+      const geo = new THREE.BufferGeometry();
+      const attr = new THREE.BufferAttribute(positions, 3);
+      attr.setUsage(THREE.DynamicDrawUsage);
+      geo.setAttribute('position', attr);
+      geo.setDrawRange(0, count);
+      const mat = new THREE.ShaderMaterial({
+        uniforms: { uColor: { value: color } },
+        vertexShader: MARKER_VS, fragmentShader: MARKER_FS,
+        transparent: true, depthWrite: false, depthTest: true,
+        blending: THREE.AdditiveBlending,
+      });
+      const pts = new THREE.Points(geo, mat);
+      pts.frustumCulled = false;
+      return pts;
     }
 
     // Toggle satellite group visibility
@@ -1001,9 +1070,9 @@ export default function App() {
         // At fit distance, 1px ≈ earthVisR * 2 / screenH. So 3px ≈ earthVisR * 0.006.
         const earthVisR = baseScale(EARTH_IDX) * earthSceneR;
         const slDotR = earthVisR * STARLINK_DOT_FACTOR;
-        // Flat panel shape: wider and thinner than a cube, more recognizable as satellite
-        const slGeo = new THREE.BoxGeometry(slDotR * 3, slDotR * 0.4, slDotR * 2);
-        const slMat = new THREE.MeshStandardMaterial({ color: 0x8B5CF6, metalness: 0.6, roughness: 0.3, emissive: new THREE.Color(0x4a2e8a), emissiveIntensity: 0.5 });
+        // Detailed merged geometry: flat body + solar panel + antennas with vertex colors
+        const slGeo = createStarlinkInstanceGeo(slDotR);
+        const slMat = new THREE.MeshStandardMaterial({ vertexColors: true, metalness: 0.7, roughness: 0.3, emissive: new THREE.Color(0x333333), emissiveIntensity: 0.4 });
         const slMesh = new THREE.InstancedMesh(slGeo, slMat, slCount);
         slMesh.frustumCulled = false;
         slMesh.visible = false;
@@ -1038,7 +1107,12 @@ export default function App() {
         slMesh.instanceMatrix.needsUpdate = true;
         slMesh.visible = true;
 
+        // 12px ring markers (fixed screen size, always visible)
+        const slMarkers = createMarkerPoints(slPositions, slCount, new THREE.Color(0.55, 0.36, 0.96));
+        scene.add(slMarkers);
+
         satDataRef.current.starlinkMesh = slMesh;
+        satDataRef.current.starlinkMarkers = slMarkers;
         satDataRef.current.starlinkSats = newSats;
         satDataRef.current.starlinkPositions = slPositions;
 
@@ -1060,6 +1134,7 @@ export default function App() {
           setSatellites(prev => prev.filter(s => s.groupId !== GID_STARLINK));
         } else if (satDataRef.current.starlinkMesh) {
           satDataRef.current.starlinkMesh.visible = true;
+          if (satDataRef.current.starlinkMarkers) satDataRef.current.starlinkMarkers.visible = true;
         }
       }
 
@@ -1075,9 +1150,9 @@ export default function App() {
         const dbPositions = new Float32Array(dbCount * 3);
         const earthVisR = baseScale(EARTH_IDX) * earthSceneR;
         const dbDotR = earthVisR * DEBRIS_DOT_FACTOR;
-        // Irregular tetrahedron shape: looks like a tumbling fragment at any scale
-        const dbGeo = new THREE.TetrahedronGeometry(dbDotR * 1.5);
-        const dbMat = new THREE.MeshStandardMaterial({ color: 0xEF4444, metalness: 0.5, roughness: 0.6, emissive: new THREE.Color(0x881111), emissiveIntensity: 0.5 });
+        // Detailed merged geometry: broken fragment + torn panel + strut with vertex colors
+        const dbGeo = createDebrisInstanceGeo(dbDotR);
+        const dbMat = new THREE.MeshStandardMaterial({ vertexColors: true, metalness: 0.6, roughness: 0.5, emissive: new THREE.Color(0x442222), emissiveIntensity: 0.4 });
         const dbMesh = new THREE.InstancedMesh(dbGeo, dbMat, dbCount);
         dbMesh.frustumCulled = false;
         dbMesh.visible = false;
@@ -1109,7 +1184,12 @@ export default function App() {
         dbMesh.instanceMatrix.needsUpdate = true;
         dbMesh.visible = true;
 
+        // 12px ring markers (fixed screen size, always visible)
+        const dbMarkers = createMarkerPoints(dbPositions, dbCount, new THREE.Color(1.0, 0.35, 0.2));
+        scene.add(dbMarkers);
+
         satDataRef.current.debrisMesh = dbMesh;
+        satDataRef.current.debrisMarkers = dbMarkers;
         satDataRef.current.debrisSats = newDebris;
         satDataRef.current.debrisPositions = dbPositions;
 
@@ -1130,6 +1210,7 @@ export default function App() {
           setSatellites(prev => prev.filter(s => s.groupId !== GID_DEBRIS));
         } else if (satDataRef.current.debrisMesh) {
           satDataRef.current.debrisMesh.visible = true;
+          if (satDataRef.current.debrisMarkers) satDataRef.current.debrisMarkers.visible = true;
         }
       }
 
@@ -1157,6 +1238,7 @@ export default function App() {
 
     // Focus on a specific satellite
     (window as any).__focusSat = (idx: number) => {
+      if (lm.active) return; // prevent focus switching during lunar mission
       const sm = satDataRef.current.meshes[idx];
       const sat = satDataRef.current.sats[idx];
       if (!sm || !sat) return;
@@ -1478,15 +1560,17 @@ export default function App() {
 
     // Lunar mission focus — now that focIdx/tT/tD are declared
     (window as any).__focusLunarMission = () => {
-      if (lm.spacecraft && lm.spacecraft.visible) {
+      if (lm.spacecraft) {
         focIdx = -1; focSatIdx = -1; focMoonMesh = null;
+        lm.focusLunar = true;
         tT.copy(lm.spacecraft.position);
-        tD = 5;
+        tD = PHASE_CAMERA_DISTANCE['launch'] ?? 5;
         (window as any).__closeAllPanels();
       }
     };
 
     function focusObj(i: number) {
+      if (lm.active) return; // prevent focus switching during lunar mission
       focIdx = i; focSatIdx = -1; focMoonMesh = null; const p = P[i];
       tT.copy(meshes[i].position);
       const visR = baseScale(i) * p.r;
@@ -1513,6 +1597,7 @@ export default function App() {
     }
 
     function showProbeInfo(i: number) {
+      if (lm.active) return;
       const pr = PR[i]; focIdx = -1; focSatIdx = -1; focMoonMesh = null;
       tT.copy(probeMeshes[i].position); tD = fitDistance(0.05); // probes scaled to ~0.05
 
@@ -1538,7 +1623,7 @@ export default function App() {
     (window as any).__focusPlanetByIdx = (i: number) => focusObj(i);
 
     function showMoonInfo() {
-      if (!moonMesh) return;
+      if (!moonMesh || lm.active) return;
       focIdx = -1; focSatIdx = -1; focMoonMesh = moonMesh;
       tT.copy(moonMesh.position);
       tD = fitDistance(moonMesh.scale.x * 0.27);
@@ -1556,6 +1641,7 @@ export default function App() {
     }
 
     function showNaturalMoonInfo(d: any) {
+      if (lm.active) return;
       focIdx = -1; focSatIdx = -1;
       const nmIdx = naturalMoonMeshes.findIndex(m => m.userData.id === d.id);
       if (nmIdx < 0) return;
@@ -1706,7 +1792,7 @@ export default function App() {
         if (!el) continue;
         const sm = sd.meshes[i];
         const isFocused = (i === focSatIdx && sm?.userData?._focusActive);
-        if (!sm || (!sm.visible && !isFocused) || !showBrackets || !showHelpers || spd > SPEED_HIDE_UI) { el.style.display = 'none'; continue; }
+        if (!sm || (!sm.visible && !isFocused) || !showBrackets || !showHelpers || spd > SPEED_HIDE_UI || lm.active) { el.style.display = 'none'; continue; }
 
         bracketVec.setFromMatrixPosition(sm.matrixWorld);
         if (isOccludedByPlanet(bracketVec)) { el.style.display = 'none'; continue; }
@@ -2183,7 +2269,53 @@ export default function App() {
           { x: earthPos3.x, y: earthPos3.y, z: earthPos3.z },
           { x: moonPos3.x, y: moonPos3.y, z: moonPos3.z },
           eScale,
+          meshes[EARTH_IDX].rotation.y,
         );
+
+        // Auto-speed: update speed based on current phase
+        if (lm.autoSpeed) {
+          const targetSpeed = PHASE_AUTO_SPEED[ms.phase.id] ?? 5000;
+          // Smooth transition: lerp toward target speed
+          lm.speed += (targetSpeed - lm.speed) * Math.min(1, dt * 3);
+        }
+
+        // Launch sub-phase annotations
+        if (ms.phase.id === 'launch') {
+          let currentSubIdx = -1;
+          for (let si = LAUNCH_SUB_PHASES.length - 1; si >= 0; si--) {
+            if (ms.missionElapsed >= LAUNCH_SUB_PHASES[si].timeSeconds) {
+              currentSubIdx = si;
+              break;
+            }
+          }
+          if (currentSubIdx >= 0 && currentSubIdx !== lm.lastSubPhaseIdx) {
+            lm.lastSubPhaseIdx = currentSubIdx;
+            const sub = LAUNCH_SUB_PHASES[currentSubIdx];
+            setLunarSubPhase({ nameCn: sub.nameCn, descriptionCn: sub.descriptionCn });
+
+            // Visual actions on the rocket model
+            if (sub.visualAction && lm.rocketModel) {
+              const rk = lm.rocketModel;
+              if (sub.visualAction === 'drop_boosters') {
+                rk.children.forEach(c => {
+                  if (c.name.startsWith('booster_')) c.visible = false;
+                });
+              } else if (sub.visualAction === 'drop_fairing') {
+                rk.children.forEach(c => {
+                  if (c.name === 'fairing' || c.name === 'fairing_ring') c.visible = false;
+                });
+              } else if (sub.visualAction === 'stage_separate') {
+                rk.children.forEach(c => {
+                  if (c.name === 'core_nozzle' || c.name === 'sep_ring') c.visible = false;
+                  if (c.name === 'upper_nozzle') c.visible = true;
+                });
+              }
+            }
+          }
+        } else if (lm.lastSubPhaseIdx >= 0) {
+          lm.lastSubPhaseIdx = -1;
+          setLunarSubPhase(null);
+        }
 
         // Swap spacecraft model when phase changes between rocket and module
         const isRocketPhase = ms.phase.id === 'launch' || ms.phase.id === 'parking' || ms.phase.id === 'tli';
@@ -2198,23 +2330,26 @@ export default function App() {
         if (lm.spacecraft) {
           lm.spacecraft.visible = true;
           lm.spacecraft.position.set(ms.position.x, ms.position.y, ms.position.z);
-          // Scale based on distance to Earth for visibility
+          // Scale spacecraft — NOT multiplied by eScale (would make it invisible)
+          // Use a fixed scale that's visible at the camera distances we set per phase
           const distToEarth = Math.sqrt(
             (ms.position.x - earthPos3.x) ** 2 +
             (ms.position.y - earthPos3.y) ** 2 +
             (ms.position.z - earthPos3.z) ** 2
           );
-          const scaleVal = Math.max(0.02, Math.min(0.15, distToEarth * 0.005)) * eScale;
+          const scaleVal = Math.max(SPACECRAFT_MIN_SCALE, Math.min(SPACECRAFT_MAX_SCALE, distToEarth * 0.003)) * 0.5;
           lm.spacecraft.scale.setScalar(scaleVal);
 
-          // Point rocket upward during launch, otherwise orient along trajectory
-          if (ms.phase.id === 'launch') {
+          // Orient spacecraft along velocity direction (heading)
+          const h = ms.heading;
+          if (h.x !== 0 || h.y !== 0 || h.z !== 0) {
+            // Point the spacecraft's +Y axis (model "up") along the heading
             lm.spacecraft.rotation.set(0, 0, 0);
-          } else {
-            lm.spacecraft.rotation.y = Math.atan2(
-              ms.position.z - earthPos3.z,
-              ms.position.x - earthPos3.x
-            );
+            // Y-rotation: heading in XZ plane
+            lm.spacecraft.rotation.y = Math.atan2(h.x, h.z);
+            // X-rotation: pitch (tilt up/down)
+            const xzLen = Math.sqrt(h.x * h.x + h.z * h.z);
+            lm.spacecraft.rotation.x = -Math.atan2(h.y, xzLen);
           }
         }
 
@@ -2225,13 +2360,18 @@ export default function App() {
           if (burning && lm.spacecraft) {
             lm.exhaust.position.copy(lm.spacecraft.position);
             lm.exhaust.scale.copy(lm.spacecraft.scale);
-            // Flicker
-            (lm.exhaust.material as THREE.MeshBasicMaterial).opacity = 0.5 + Math.random() * 0.3;
+            // Flicker — apply to each child mesh material
+            lm.exhaust.traverse(child => {
+              const m = child as THREE.Mesh;
+              if (m.isMesh && m.material) {
+                (m.material as THREE.MeshBasicMaterial).opacity = 0.5 + Math.random() * 0.3;
+              }
+            });
           }
         }
 
         // Trail emission — add a point every 0.5% of mission progress
-        if (lm.trail && lm.elapsed - lm.lastTrailTime > totalDur * 0.002) {
+        if (lm.trail && lm.elapsed - lm.lastTrailTime > totalDur * 0.0005) {
           const phaseColor = getPhaseColor(ms.phase.id);
           lm.trailPointCount = appendTrailPoint(
             lm.trail, lm.trailPointCount,
@@ -2239,6 +2379,19 @@ export default function App() {
             phaseColor.r, phaseColor.g, phaseColor.b,
           );
           lm.lastTrailTime = lm.elapsed;
+        }
+
+        // Camera tracking: follow spacecraft and adapt distance by phase
+        if (lm.focusLunar && lm.spacecraft) {
+          // Auto-clear lunar focus if user selected another focus target
+          if (focIdx >= 0 || focSatIdx >= 0 || focMoonMesh) {
+            lm.focusLunar = false;
+          } else {
+            tT.copy(lm.spacecraft.position);
+            const targetDist = PHASE_CAMERA_DISTANCE[ms.phase.id] ?? 5;
+            // Smooth lerp toward target distance (~1 second transition)
+            tD += (targetDist - tD) * Math.min(1, dt * 2);
+          }
         }
 
         // Update React state (throttled to every 10 frames)
@@ -2277,7 +2430,7 @@ export default function App() {
         trailGroup.scale.setScalar(sc);
 
         const earthScreenForSats = getScreenSize(meshes[eIdx], cam, earthSceneR * sc);
-        const hideAllSats = earthScreenForSats < innerHeight / cfg.satBracketHideFrac;
+        const hideAllSats = lm.active || earthScreenForSats < innerHeight / cfg.satBracketHideFrac;
 
         for (let i = 0; i < sd.sats.length; i++) {
           const sm = sd.meshes[i];
@@ -2368,7 +2521,9 @@ export default function App() {
         // ═══ Starlink InstancedMesh positions (single draw call, batched) ═══
         if (sd.starlinkMesh) {
           const slGroupOn = sd.groups[GID_STARLINK] ?? false;
-          sd.starlinkMesh.visible = slGroupOn && !hideAllSats;
+          const slVis = slGroupOn && !hideAllSats;
+          sd.starlinkMesh.visible = slVis;
+          if (sd.starlinkMarkers) sd.starlinkMarkers.visible = slVis && (cfg.showSlMarkers ?? true);
         }
         if (sd.starlinkMesh?.visible && satThisFrame && sd.starlinkSats && sd.starlinkPositions) {
           const slSats = sd.starlinkSats;
@@ -2393,12 +2548,18 @@ export default function App() {
           // Position InstancedMesh at Earth center — all instances are relative offsets
           slMesh.position.copy(ep);
           slMesh.instanceMatrix.needsUpdate = true;
+          if (sd.starlinkMarkers) {
+            sd.starlinkMarkers.position.copy(ep);
+            sd.starlinkMarkers.geometry.attributes.position.needsUpdate = true;
+          }
         }
 
         // ═══ Debris InstancedMesh positions (single draw call, batched) ═══
         if (sd.debrisMesh) {
           const dbGroupOn = sd.groups[GID_DEBRIS] ?? false;
-          sd.debrisMesh.visible = dbGroupOn && !hideAllSats;
+          const dbVis = dbGroupOn && !hideAllSats;
+          sd.debrisMesh.visible = dbVis;
+          if (sd.debrisMarkers) sd.debrisMarkers.visible = dbVis && (cfg.showDbMarkers ?? true);
         }
         if (sd.debrisMesh?.visible && satThisFrame && sd.debrisSats && sd.debrisPositions) {
           const dbSats = sd.debrisSats;
@@ -2421,6 +2582,10 @@ export default function App() {
           }
           dbMesh.position.copy(ep);
           dbMesh.instanceMatrix.needsUpdate = true;
+          if (sd.debrisMarkers) {
+            sd.debrisMarkers.position.copy(ep);
+            sd.debrisMarkers.geometry.attributes.position.needsUpdate = true;
+          }
         }
       }
 
@@ -2853,7 +3018,7 @@ export default function App() {
       // Dispose lunar mission
       [lm.rocketModel, lm.moduleModel].forEach(m => { if (m) { m.traverse(child => { if ((child as THREE.Mesh).geometry) (child as THREE.Mesh).geometry.dispose(); }); scene.remove(m); } });
       if (lm.trail) { scene.remove(lm.trail.line); lm.trail.line.geometry.dispose(); (lm.trail.line.material as THREE.Material).dispose(); }
-      if (lm.exhaust) { scene.remove(lm.exhaust); lm.exhaust.geometry.dispose(); (lm.exhaust.material as THREE.Material).dispose(); }
+      if (lm.exhaust) { scene.remove(lm.exhaust); lm.exhaust.traverse(child => { const m = child as THREE.Mesh; if (m.isMesh) { m.geometry?.dispose(); (m.material as THREE.Material)?.dispose(); } }); }
       // Dispose glow meshes
       glowMeshes.forEach(gm => { gm.geometry.dispose(); (gm.material as THREE.Material).dispose(); });
       // Dispose stars, milky way, deep space
@@ -2962,6 +3127,20 @@ export default function App() {
         <div className="tspeed" ref={spdTxtRef} style={{ minWidth: 60, textAlign: 'center' }}>1分/秒</div>
         <button className="tb" onClick={() => (window as any).__changeSpd(1)}><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></button>
         <button className="tb" onClick={() => (window as any).__resetCam()}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg></button>
+        {!lunarMissionActive && (
+          <button
+            className="tb lunar-tb"
+            onClick={() => (window as any).__startLunarMission()}
+            title="启动嫦娥五号登月任务模拟"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/>
+              <path d="M12 15l-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/>
+              <path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/>
+              <path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/>
+            </svg>
+          </button>
+        )}
       </div>
 
       {showStatus && (
@@ -3065,10 +3244,22 @@ export default function App() {
                   </div>
                   <div className="sat-content-divider" />
                   <div className="sat-ref">{refs[g.id]}</div>
-                  <label className="info-toggle" style={{ fontSize: 12, padding: '6px 0' }}>
-                    <input type="checkbox" checked={satGroups[g.id] ?? false} onChange={() => (window as any).__toggleSatGroup(g.id)} />
-                    <span>显示</span>
-                  </label>
+                  <div style={{ display: 'flex', gap: 12, alignItems: 'center', padding: '6px 0' }}>
+                    <label className="info-toggle" style={{ fontSize: 12 }}>
+                      <input type="checkbox" checked={satGroups[g.id] ?? false} onChange={() => (window as any).__toggleSatGroup(g.id)} />
+                      <span>显示</span>
+                    </label>
+                    {(g.id === GID_STARLINK || g.id === GID_DEBRIS) && (
+                      <label className="info-toggle" style={{ fontSize: 12 }}>
+                        <input type="checkbox" checked={(window as any).__cfg?.[g.id === GID_STARLINK ? 'showSlMarkers' : 'showDbMarkers'] ?? true} onChange={() => {
+                          const key = g.id === GID_STARLINK ? 'showSlMarkers' : 'showDbMarkers';
+                          const c = (window as any).__cfg; if (c) c[key] = !c[key];
+                          setSatGroups(prev => ({ ...prev })); // trigger re-render
+                        }} />
+                        <span>标注框</span>
+                      </label>
+                    )}
+                  </div>
                   {/* Starlink progress bar */}
                   {g.id === GID_STARLINK && starlinkLoading && (
                     <div style={{ marginBottom: 8 }}>
@@ -3224,6 +3415,10 @@ export default function App() {
                 <CfgStepper label="选择框大小" min={6} max={24} step={1} cfgKey="bracketSize" />
                 <CfgStepper label="名称可见性" min={5000} max={20000} step={100} cfgKey="satLabelHideFrac" />
                 <CfgStepper label="选择框可见性" min={100} max={1000} step={50} cfgKey="satBracketHideFrac" />
+                <div className="sat-content-divider" />
+                <div style={{ fontSize: 10, color: 'var(--glow)', marginBottom: 4 }}>星群标注框</div>
+                <CfgToggle label="Starlink 标注框" cfgKey="showSlMarkers" />
+                <CfgToggle label="太空垃圾标注框" cfgKey="showDbMarkers" />
               </>)}
 
               {settingsTab === 'general' && (<>
@@ -3281,7 +3476,6 @@ export default function App() {
           <div className="lunar-progress-bar">
             {MISSION_PHASES.map((phase, i) => {
               const totalDur = getTotalMissionDuration();
-              const phaseStart = getPhaseStartTime(i);
               const widthPct = (phase.durationSeconds / totalDur) * 100;
               return (
                 <div
@@ -3299,13 +3493,14 @@ export default function App() {
             })}
           </div>
 
-          {/* Current phase info */}
+          {/* Current phase info + sub-phase annotation */}
           <div className="lunar-phase-info">
             <div className="lunar-phase-name" style={{ color: MISSION_PHASES[lunarPhaseIndex]?.color }}>
               {lunarPhaseIndex + 1}/{MISSION_PHASES.length} · {MISSION_PHASES[lunarPhaseIndex]?.nameCn}
+              {lunarSubPhase && <span className="lunar-subphase-tag"> · {lunarSubPhase.nameCn}</span>}
             </div>
             <div className="lunar-phase-desc">
-              {MISSION_PHASES[lunarPhaseIndex]?.descriptionCn}
+              {lunarSubPhase ? lunarSubPhase.descriptionCn : MISSION_PHASES[lunarPhaseIndex]?.descriptionCn}
             </div>
             {MISSION_PHASES[lunarPhaseIndex]?.deltaVMs && (
               <div className="lunar-phase-stats">
@@ -3331,9 +3526,13 @@ export default function App() {
             </button>
             <select
               className="lunar-speed-select"
-              value={lunarMissionRef.current.speed}
-              onChange={(e) => (window as any).__setLunarSpeed(Number(e.target.value))}
+              value={lunarMissionRef.current.autoSpeed ? 'auto' : lunarMissionRef.current.speed}
+              onChange={(e) => {
+                const v = e.target.value;
+                (window as any).__setLunarSpeed(v === 'auto' ? 'auto' : Number(v));
+              }}
             >
+              <option value="auto">Auto · {Math.round(lunarMissionRef.current.speed)}x</option>
               <option value={1000}>1000x</option>
               <option value={2000}>2000x</option>
               <option value={5000}>5000x</option>
@@ -3358,23 +3557,6 @@ export default function App() {
             </span>
           </div>
         </div>
-      )}
-
-      {/* Lunar Mission Launch Button (when not active) */}
-      {!lunarMissionActive && !uiHidden && introDone && (
-        <button
-          className="lunar-launch-btn"
-          onClick={() => (window as any).__startLunarMission()}
-          title="启动嫦娥五号登月任务模拟"
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/>
-            <path d="M12 15l-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/>
-            <path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/>
-            <path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/>
-          </svg>
-          登月
-        </button>
       )}
 
       {/* Toast popup */}

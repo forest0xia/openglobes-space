@@ -461,18 +461,8 @@ canvas{display:block;position:fixed;inset:0;z-index:1}
 }
 
 /* ═══════ Lunar Mission UI ═══════ */
-.lunar-launch-btn{
-  position:fixed;bottom:70px;left:50%;transform:translateX(-50%);z-index:100;
-  display:flex;align-items:center;gap:6px;
-  padding:8px 16px;border:1px solid rgba(255,213,79,0.3);border-radius:20px;
-  background:rgba(255,213,79,0.08);color:#FFD54F;
-  font-family:var(--font-cn);font-size:12px;cursor:pointer;
-  backdrop-filter:blur(8px);transition:all .3s;
-}
-.lunar-launch-btn:hover{
-  background:rgba(255,213,79,0.18);border-color:rgba(255,213,79,0.5);
-  box-shadow:0 0 20px rgba(255,213,79,0.15);
-}
+.lunar-tb{color:#FFD54F !important;}
+.lunar-tb:hover{color:#FFD54F !important;background:rgba(255,213,79,0.15);box-shadow:0 0 12px rgba(255,213,79,0.15);}
 
 .lunar-panel{
   position:fixed;bottom:70px;left:50%;transform:translateX(-50%);z-index:200;
@@ -524,4 +514,8 @@ canvas{display:block;position:fixed;inset:0;z-index:1}
 .lunar-time{
   font-size:11px;color:var(--text-dim);font-family:var(--font-mono);
   text-align:center;
+}
+
+.lunar-subphase-tag{
+  color:#FFD54F;font-weight:400;opacity:0.8;
 }

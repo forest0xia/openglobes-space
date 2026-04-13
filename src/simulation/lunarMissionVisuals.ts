@@ -7,7 +7,12 @@
 
 import * as THREE from 'three';
 import { MISSION_PHASES } from '../data/lunarMission';
-import { computeTrajectoryPoints } from './lunarMission';
+
+// Spacecraft scale constants
+export const ROCKET_BASE_SCALE = 0.15;
+export const MODULE_BASE_SCALE = 0.12;
+export const SPACECRAFT_MIN_SCALE = 0.05;
+export const SPACECRAFT_MAX_SCALE = 0.25;
 
 // ═══════════════════════════════════════════════════════════════
 // SPACECRAFT MODEL — Long March 5 / Chang'e 5
@@ -20,63 +25,96 @@ import { computeTrajectoryPoints } from './lunarMission';
 function createLongMarch5(): THREE.Group {
   const group = new THREE.Group();
 
-  const bodyColor = 0xE8E0D0;   // off-white body
-  const boosterColor = 0xE8E0D0;
+  const bodyColor = 0xE8E0D0;
+  const boosterColor = 0xD8D0C0;
   const fairingColor = 0xDDDDDD;
-  const nozzleColor = 0x444444;
-  const stripeColor = 0xCC0000; // red stripe (Chinese flag color)
+  const nozzleColor = 0x333333;
+  const stripeColor = 0xCC0000;
+  const ringColor = 0x666666;
+  const emissiveIntensity = 0.15;
 
-  // Core stage — tall cylinder
-  const coreGeo = new THREE.CylinderGeometry(0.018, 0.02, 0.20, 12);
-  const coreMat = new THREE.MeshBasicMaterial({ color: bodyColor });
-  const core = new THREE.Mesh(coreGeo, coreMat);
+  const mat = (color: number, emissive?: number) => new THREE.MeshStandardMaterial({
+    color,
+    emissive: emissive ?? color,
+    emissiveIntensity,
+    roughness: 0.6,
+    metalness: 0.2,
+  });
+
+  // Core stage
+  const coreGeo = new THREE.CylinderGeometry(0.024, 0.028, 0.28, 16);
+  const core = new THREE.Mesh(coreGeo, mat(bodyColor));
+  core.name = 'core';
   group.add(core);
 
-  // Red stripe on core
-  const stripeGeo = new THREE.CylinderGeometry(0.0205, 0.0205, 0.015, 12);
-  const stripeMat = new THREE.MeshBasicMaterial({ color: stripeColor });
-  const stripe = new THREE.Mesh(stripeGeo, stripeMat);
-  stripe.position.y = 0.02;
+  // Red stripe band
+  const stripeGeo = new THREE.CylinderGeometry(0.029, 0.029, 0.025, 16);
+  const stripe = new THREE.Mesh(stripeGeo, mat(stripeColor, stripeColor));
+  stripe.position.y = 0.04;
+  stripe.name = 'stripe';
   group.add(stripe);
 
-  // Payload fairing (top) — cone
-  const fairingGeo = new THREE.ConeGeometry(0.022, 0.08, 12);
-  const fairingMat = new THREE.MeshBasicMaterial({ color: fairingColor });
-  const fairing = new THREE.Mesh(fairingGeo, fairingMat);
-  fairing.position.y = 0.14;
+  // Stage separation ring
+  const sepRingGeo = new THREE.CylinderGeometry(0.030, 0.030, 0.008, 16);
+  const sepRing = new THREE.Mesh(sepRingGeo, mat(ringColor));
+  sepRing.position.y = -0.02;
+  sepRing.name = 'sep_ring';
+  group.add(sepRing);
+
+  // Payload fairing
+  const fairingGeo = new THREE.ConeGeometry(0.032, 0.12, 16);
+  const fairing = new THREE.Mesh(fairingGeo, mat(fairingColor));
+  fairing.position.y = 0.20;
+  fairing.name = 'fairing';
   group.add(fairing);
 
-  // 4 Boosters (strap-on) — smaller cylinders arranged around core
-  const boosterGeo = new THREE.CylinderGeometry(0.010, 0.012, 0.15, 8);
-  const boosterMat = new THREE.MeshBasicMaterial({ color: boosterColor });
-  const boosterOffsets = [
-    [0.032, 0], [-0.032, 0], [0, 0.032], [0, -0.032],
+  // Fairing transition ring
+  const fRingGeo = new THREE.CylinderGeometry(0.033, 0.026, 0.012, 16);
+  const fRing = new THREE.Mesh(fRingGeo, mat(ringColor));
+  fRing.position.y = 0.14;
+  fRing.name = 'fairing_ring';
+  group.add(fRing);
+
+  // 4 Boosters
+  const boosterGeo = new THREE.CylinderGeometry(0.014, 0.017, 0.22, 10);
+  const boosterNoseGeo = new THREE.ConeGeometry(0.014, 0.035, 10);
+  const boosterNozzleGeo = new THREE.CylinderGeometry(0.010, 0.015, 0.020, 10);
+
+  const boosterOffsets: [number, number][] = [
+    [0.045, 0], [-0.045, 0], [0, 0.045], [0, -0.045],
   ];
-  for (const [ox, oz] of boosterOffsets) {
-    const booster = new THREE.Mesh(boosterGeo, boosterMat);
-    booster.position.set(ox, -0.025, oz);
+  for (let bi = 0; bi < boosterOffsets.length; bi++) {
+    const [ox, oz] = boosterOffsets[bi];
+    const booster = new THREE.Mesh(boosterGeo, mat(boosterColor));
+    booster.position.set(ox, -0.03, oz);
+    booster.name = `booster_${bi}`;
     group.add(booster);
 
-    // Booster nose cone
-    const bnGeo = new THREE.ConeGeometry(0.010, 0.025, 8);
-    const bn = new THREE.Mesh(bnGeo, boosterMat);
-    bn.position.set(ox, 0.0625, oz);
-    group.add(bn);
+    const nose = new THREE.Mesh(boosterNoseGeo, mat(boosterColor));
+    nose.position.set(ox, 0.0925, oz);
+    nose.name = `booster_nose_${bi}`;
+    group.add(nose);
 
-    // Booster nozzle
-    const nzGeo = new THREE.CylinderGeometry(0.008, 0.011, 0.015, 8);
-    const nzMat = new THREE.MeshBasicMaterial({ color: nozzleColor });
-    const nz = new THREE.Mesh(nzGeo, nzMat);
-    nz.position.set(ox, -0.1075, oz);
-    group.add(nz);
+    const nozzle = new THREE.Mesh(boosterNozzleGeo, mat(nozzleColor, 0x111111));
+    nozzle.position.set(ox, -0.15, oz);
+    nozzle.name = `booster_nozzle_${bi}`;
+    group.add(nozzle);
   }
 
-  // Core nozzle
-  const coreNzGeo = new THREE.CylinderGeometry(0.012, 0.018, 0.02, 12);
-  const coreNzMat = new THREE.MeshBasicMaterial({ color: nozzleColor });
-  const coreNz = new THREE.Mesh(coreNzGeo, coreNzMat);
-  coreNz.position.y = -0.11;
+  // Core nozzle cluster
+  const coreNzGeo = new THREE.CylinderGeometry(0.016, 0.024, 0.025, 12);
+  const coreNz = new THREE.Mesh(coreNzGeo, mat(nozzleColor, 0x111111));
+  coreNz.position.y = -0.155;
+  coreNz.name = 'core_nozzle';
   group.add(coreNz);
+
+  // Upper stage nozzle (hidden until stage separation)
+  const upperNzGeo = new THREE.CylinderGeometry(0.010, 0.016, 0.018, 10);
+  const upperNz = new THREE.Mesh(upperNzGeo, mat(nozzleColor, 0x111111));
+  upperNz.position.y = -0.005;
+  upperNz.visible = false;
+  upperNz.name = 'upper_nozzle';
+  group.add(upperNz);
 
   return group;
 }
@@ -92,54 +130,97 @@ function createChangE5Module(): THREE.Group {
   const panelColor = 0x1a3366;
   const goldColor = 0xCCA020;
   const legColor = 0x888888;
+  const dishColor = 0xCCCCCC;
+  const emissiveIntensity = 0.15;
 
-  // Main body — octagonal approximation (cylinder with 8 sides)
-  const bodyGeo = new THREE.CylinderGeometry(0.03, 0.03, 0.04, 8);
-  const bodyMat = new THREE.MeshBasicMaterial({ color: bodyColor });
-  const body = new THREE.Mesh(bodyGeo, bodyMat);
+  const mat = (color: number, emissive?: number) => new THREE.MeshStandardMaterial({
+    color,
+    emissive: emissive ?? color,
+    emissiveIntensity,
+    roughness: 0.5,
+    metalness: 0.3,
+  });
+
+  // Main body — octagonal, larger
+  const bodyGeo = new THREE.CylinderGeometry(0.045, 0.045, 0.055, 8);
+  const body = new THREE.Mesh(bodyGeo, mat(bodyColor));
   body.rotation.x = Math.PI / 2;
   group.add(body);
 
-  // Gold foil thermal blanket
-  const foilGeo = new THREE.CylinderGeometry(0.031, 0.031, 0.035, 8);
-  const foilMat = new THREE.MeshBasicMaterial({ color: goldColor, transparent: true, opacity: 0.4 });
+  // Gold foil thermal blanket with warm emissive glow
+  const foilGeo = new THREE.CylinderGeometry(0.047, 0.047, 0.050, 8);
+  const foilMat = new THREE.MeshStandardMaterial({
+    color: goldColor,
+    emissive: 0xDD8800,
+    emissiveIntensity: 0.25,
+    transparent: true,
+    opacity: 0.35,
+    roughness: 0.3,
+    metalness: 0.6,
+  });
   const foil = new THREE.Mesh(foilGeo, foilMat);
   foil.rotation.x = Math.PI / 2;
   group.add(foil);
 
-  // 2 Solar panels
-  const panelGeo = new THREE.BoxGeometry(0.12, 0.002, 0.04);
-  const panelMat = new THREE.MeshBasicMaterial({ color: panelColor });
+  // 2 Solar panels — larger, with grid subdivisions
+  const panelGeo = new THREE.BoxGeometry(0.18, 0.003, 0.06, 6, 1, 2);
+  const panelMat = new THREE.MeshStandardMaterial({
+    color: panelColor,
+    emissive: 0x0a1a44,
+    emissiveIntensity: 0.2,
+    roughness: 0.2,
+    metalness: 0.5,
+  });
   const leftPanel = new THREE.Mesh(panelGeo, panelMat);
-  leftPanel.position.set(-0.09, 0, 0);
+  leftPanel.position.set(-0.135, 0, 0);
   group.add(leftPanel);
 
   const rightPanel = new THREE.Mesh(panelGeo, panelMat);
-  rightPanel.position.set(0.09, 0, 0);
+  rightPanel.position.set(0.135, 0, 0);
   group.add(rightPanel);
 
-  // Antenna dish
-  const dishGeo = new THREE.CylinderGeometry(0.025, 0.025, 0.004, 14);
-  const dishMat = new THREE.MeshBasicMaterial({ color: 0xCCCCCC });
-  const dish = new THREE.Mesh(dishGeo, dishMat);
-  dish.position.set(0, 0.03, -0.01);
+  // Panel arms
+  const armGeo = new THREE.CylinderGeometry(0.002, 0.002, 0.06, 4);
+  const armMat = mat(legColor);
+  for (const side of [-1, 1]) {
+    const arm = new THREE.Mesh(armGeo, armMat);
+    arm.rotation.z = Math.PI / 2;
+    arm.position.set(side * 0.075, 0, 0);
+    group.add(arm);
+  }
+
+  // Antenna dish — larger with feed horn
+  const dishGeo = new THREE.CylinderGeometry(0.035, 0.035, 0.005, 16);
+  const dish = new THREE.Mesh(dishGeo, mat(dishColor));
+  dish.position.set(0, 0.04, -0.01);
   group.add(dish);
 
-  // 4 Landing legs (for lander config)
-  const legGeo = new THREE.CylinderGeometry(0.002, 0.002, 0.06, 4);
-  const legMat = new THREE.MeshBasicMaterial({ color: legColor });
-  const legPos = [[0.035, 0.035], [-0.035, 0.035], [0.035, -0.035], [-0.035, -0.035]];
+  const hornGeo = new THREE.ConeGeometry(0.006, 0.015, 8);
+  const horn = new THREE.Mesh(hornGeo, mat(legColor));
+  horn.position.set(0, 0.05, -0.01);
+  group.add(horn);
+
+  // 4 Landing legs — more prominent with struts
+  const legGeo = new THREE.CylinderGeometry(0.003, 0.003, 0.09, 4);
+  const strutGeo = new THREE.CylinderGeometry(0.002, 0.002, 0.065, 4);
+  const footGeo = new THREE.CylinderGeometry(0.012, 0.012, 0.003, 8);
+
+  const legPos: [number, number][] = [[0.05, 0.05], [-0.05, 0.05], [0.05, -0.05], [-0.05, -0.05]];
   for (const [lx, lz] of legPos) {
-    const leg = new THREE.Mesh(legGeo, legMat);
-    leg.position.set(lx, -0.04, lz);
-    leg.rotation.z = lx > 0 ? -0.3 : 0.3;
-    leg.rotation.x = lz > 0 ? -0.3 : 0.3;
+    const leg = new THREE.Mesh(legGeo, mat(legColor));
+    leg.position.set(lx, -0.055, lz);
+    leg.rotation.z = lx > 0 ? -0.25 : 0.25;
+    leg.rotation.x = lz > 0 ? -0.25 : 0.25;
     group.add(leg);
 
-    // Foot pad
-    const footGeo = new THREE.CylinderGeometry(0.008, 0.008, 0.002, 6);
-    const foot = new THREE.Mesh(footGeo, legMat);
-    foot.position.set(lx * 1.4, -0.065, lz * 1.4);
+    const strut = new THREE.Mesh(strutGeo, mat(legColor));
+    strut.position.set(lx * 0.7, -0.04, lz * 0.7);
+    strut.rotation.z = lx > 0 ? -0.5 : 0.5;
+    strut.rotation.x = lz > 0 ? -0.5 : 0.5;
+    group.add(strut);
+
+    const foot = new THREE.Mesh(footGeo, mat(legColor));
+    foot.position.set(lx * 1.5, -0.09, lz * 1.5);
     group.add(foot);
   }
 
@@ -172,7 +253,7 @@ export function createTrajectoryLine(): {
   colors: Float32Array;
   maxPoints: number;
 } {
-  const maxPoints = 2000;
+  const maxPoints = 5000;
   const positions = new Float32Array(maxPoints * 3);
   const colors = new Float32Array(maxPoints * 3);
 
@@ -227,19 +308,38 @@ export function appendTrailPoint(
 // ═══════════════════════════════════════════════════════════════
 
 /**
- * Create a simple engine exhaust glow (cone of light).
+ * Create engine exhaust glow — multi-cone for realistic rocket cluster.
  */
-export function createExhaustEffect(): THREE.Mesh {
-  const geo = new THREE.ConeGeometry(0.015, 0.08, 8);
-  const mat = new THREE.MeshBasicMaterial({
+export function createExhaustEffect(): THREE.Group {
+  const group = new THREE.Group();
+
+  const exhaustMat = new THREE.MeshBasicMaterial({
     color: 0xFF6600,
     transparent: true,
     opacity: 0.7,
   });
-  const mesh = new THREE.Mesh(geo, mat);
-  mesh.rotation.x = Math.PI;  // point downward
-  mesh.visible = false;
-  return mesh;
+
+  // Main exhaust cone
+  const mainGeo = new THREE.ConeGeometry(0.025, 0.12, 10);
+  const main = new THREE.Mesh(mainGeo, exhaustMat);
+  main.rotation.x = Math.PI;
+  main.name = 'exhaust_main';
+  group.add(main);
+
+  // Inner bright core
+  const coreGeo = new THREE.ConeGeometry(0.012, 0.15, 8);
+  const coreMat = new THREE.MeshBasicMaterial({
+    color: 0xFFCC44,
+    transparent: true,
+    opacity: 0.6,
+  });
+  const core = new THREE.Mesh(coreGeo, coreMat);
+  core.rotation.x = Math.PI;
+  core.name = 'exhaust_core';
+  group.add(core);
+
+  group.visible = false;
+  return group;
 }
 
 /**

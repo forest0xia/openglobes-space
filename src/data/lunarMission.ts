@@ -256,6 +256,67 @@ export const ORBITAL_PARAMS = {
   returnTimeDays: 4.5,
 };
 
+// ═══════════════════════════════════════════════════════════════
+// LAUNCH SUB-PHASES
+// ═══════════════════════════════════════════════════════════════
+
+export interface LaunchSubPhase {
+  timeSeconds: number;
+  nameCn: string;
+  descriptionCn: string;
+  visualAction?: 'drop_boosters' | 'drop_fairing' | 'stage_separate';
+}
+
+export const LAUNCH_SUB_PHASES: LaunchSubPhase[] = [
+  { timeSeconds: 0,   nameCn: '点火起飞',       descriptionCn: '长征五号一级发动机及4个助推器同时点火' },
+  { timeSeconds: 12,  nameCn: '程序转弯',       descriptionCn: '火箭开始俯仰程序转弯，偏离垂直方向' },
+  { timeSeconds: 174, nameCn: '助推器分离',     descriptionCn: '4个3.35米助推器耗尽推进剂，分离脱落', visualAction: 'drop_boosters' },
+  { timeSeconds: 185, nameCn: '整流罩抛罩',     descriptionCn: '有效载荷整流罩分离，暴露嫦娥五号探测器', visualAction: 'drop_fairing' },
+  { timeSeconds: 460, nameCn: '一二级分离',     descriptionCn: '芯一级发动机关机，一二级火工品分离', visualAction: 'stage_separate' },
+  { timeSeconds: 480, nameCn: '二级发动机点火', descriptionCn: '芯二级氢氧发动机启动，继续加速' },
+  { timeSeconds: 500, nameCn: '入轨',           descriptionCn: '进入200公里近地停泊轨道' },
+];
+
+// ═══════════════════════════════════════════════════════════════
+// AUTO-SPEED MAP (speed multiplier per phase for "Auto" mode)
+// ═══════════════════════════════════════════════════════════════
+
+export const PHASE_AUTO_SPEED: Record<string, number> = {
+  launch:           50,
+  parking:          200,
+  tli:              50,
+  transfer:         15000,
+  loi:              100,
+  lunar_orbit:      10000,
+  descent:          50,
+  surface:          5000,
+  ascent:           50,
+  rendezvous:       1000,
+  tei:              30,
+  return_transfer:  15000,
+  reentry:          50,
+};
+
+// ═══════════════════════════════════════════════════════════════
+// CAMERA DISTANCE PER PHASE (scene units for adaptive focus)
+// ═══════════════════════════════════════════════════════════════
+
+export const PHASE_CAMERA_DISTANCE: Record<string, number> = {
+  launch:           0.15,
+  parking:          0.25,
+  tli:              0.2,
+  transfer:         16,
+  loi:              0.5,
+  lunar_orbit:      0.4,
+  descent:          0.15,
+  surface:          0.15,
+  ascent:           0.2,
+  rendezvous:       0.4,
+  tei:              0.5,
+  return_transfer:  16,
+  reentry:          0.2,
+};
+
 // Scene-unit conversions (matching existing codebase: 1 Earth radius = 1 scene unit)
 export const EARTH_RADIUS_SCENE = 1;
 export const MOON_DISTANCE_SCENE = 60.3;  // Earth radii (matching App.tsx moonMesh positioning)

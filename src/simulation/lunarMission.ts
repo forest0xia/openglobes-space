@@ -13,7 +13,7 @@
  *   - Earth position comes from the planet mesh in the main animation loop
  */
 
-import { MISSION_PHASES, MOON_DISTANCE_SCENE, type MissionPhase } from '../data/lunarMission';
+import { MISSION_PHASES, type MissionPhase } from '../data/lunarMission';
 
 // ═══════════════════════════════════════════════════════════════
 // TYPES
@@ -26,6 +26,7 @@ export interface MissionState {
   missionElapsed: number;      // total seconds since launch
   missionProgress: number;     // 0..1 overall
   position: { x: number; y: number; z: number };  // scene coords (absolute)
+  heading: { x: number; y: number; z: number };    // velocity direction (unit vector)
   phase: MissionPhase;
   completed: boolean;
 }
@@ -70,6 +71,13 @@ function easeInOutCubic(t: number): number {
 }
 
 /**
+ * Quintic easing for more natural gravitational arc (longer acceleration/deceleration tails)
+ */
+function easeInOutQuint(t: number): number {
+  return t < 0.5 ? 16 * t * t * t * t * t : 1 - Math.pow(-2 * t + 2, 5) / 2;
+}
+
+/**
  * Compute spacecraft position in scene coordinates.
  *
  * @param elapsed     - Mission elapsed time in seconds
@@ -78,11 +86,16 @@ function easeInOutCubic(t: number): number {
  * @param earthScale  - Current Earth mesh scale factor
  * @returns MissionState with position and phase info
  */
+// Wenchang launch site: 19.6°N latitude
+const WENCHANG_LAT = 19.6 * Math.PI / 180;
+
 export function computeMissionState(
   elapsed: number,
   earthPos: { x: number; y: number; z: number },
   moonPos: { x: number; y: number; z: number },
   earthScale: number,
+  earthRotY?: number,
+  _noHeading?: boolean, // internal flag to prevent recursion
 ): MissionState {
   // Clamp to mission duration
   const clampedElapsed = Math.max(0, Math.min(elapsed, totalMissionDuration));
@@ -97,25 +110,39 @@ export function computeMissionState(
   const emDz = moonPos.z - earthPos.z;
   const emDist = Math.sqrt(emDx * emDx + emDy * emDy + emDz * emDz);
   const emNx = emDist > 0 ? emDx / emDist : 1;
-  const emNy = emDist > 0 ? emDy / emDist : 0;
   const emNz = emDist > 0 ? emDz / emDist : 0;
 
   // Perpendicular vector (for orbit curvature) — cross with Y-up
   const perpX = -emNz;
   const perpZ = emNx;
 
+  // Launch direction: offset from Earth-Moon line toward Wenchang latitude
+  // The launch site is on Earth's surface at ~20° latitude, offset ~60° from Moon direction
+  const launchAngle = (earthRotY ?? 0) + Math.PI * 0.35; // Wenchang side of Earth
+  const cosLat = Math.cos(WENCHANG_LAT);
+  const sinLat = Math.sin(WENCHANG_LAT);
+  const launchDirX = cosLat * Math.sin(launchAngle);
+  const launchDirY = sinLat;
+  const launchDirZ = cosLat * Math.cos(launchAngle);
+
   let x: number, y: number, z: number;
   const sc = earthScale; // scale factor for Earth-centric distances
 
   switch (phase.id) {
     case 'launch': {
-      // Rise from Earth surface to parking orbit altitude
-      // Curved ascent trajectory
-      const alt = progress * (200 / 6371) * sc;  // 200km in scene units
-      const angle = progress * Math.PI * 0.3;    // slight arc during ascent
-      x = earthPos.x + (1 * sc + alt) * Math.cos(angle) * emNx + (1 * sc + alt) * Math.sin(angle) * perpX;
-      y = earthPos.y + alt * 0.5;
-      z = earthPos.z + (1 * sc + alt) * Math.cos(angle) * emNz + (1 * sc + alt) * Math.sin(angle) * perpZ;
+      // Launch from Wenchang, Hainan (19.6°N)
+      // Rocket rises from surface, gradually pitching toward orbital direction
+      const alt = progress * (200 / 6371) * sc;
+      const r = 1 * sc + alt;
+      const tiltFrac = easeInOutCubic(progress); // smooth blend toward orbit
+      // Blend from launch site direction to Earth-Moon orbital plane
+      const dx = launchDirX * (1 - tiltFrac) + emNx * tiltFrac;
+      const dy = launchDirY * (1 - tiltFrac) + 0 * tiltFrac;
+      const dz = launchDirZ * (1 - tiltFrac) + emNz * tiltFrac;
+      const dLen = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
+      x = earthPos.x + r * dx / dLen;
+      y = earthPos.y + r * dy / dLen;
+      z = earthPos.z + r * dz / dLen;
       break;
     }
 
@@ -149,7 +176,7 @@ export function computeMissionState(
       // Earth-Moon transfer: curved trajectory (not straight line)
       // Uses a simplified representation of the actual transfer orbit
       // The real trajectory curves due to Earth and Moon gravity
-      const t = easeInOutCubic(progress);
+      const t = easeInOutQuint(progress);
 
       // Main progress along Earth-Moon line
       const mainDist = t * emDist;
@@ -170,14 +197,15 @@ export function computeMissionState(
     }
 
     case 'loi': {
-      // Arriving at Moon, decelerating into orbit
-      // Spiral inward from approach to circular orbit
-      const orbitR = MOON_DISTANCE_SCENE > 0
-        ? (1 + 200 / 1737) * MOON_RADIUS_SCENE * sc
-        : 2 * sc;
-      const approachR = orbitR * 3;  // start further out
-      const r = approachR + (orbitR - approachR) * progress;
-      const angle = progress * Math.PI * 1.5;  // spiral ~270°
+      // Lunar Orbit Insertion — logarithmic spiral approach
+      // r = a * e^(b*theta) where a = target orbit radius, spiral inward
+      const orbitR = (1 + 200 / 1737) * MOON_RADIUS_SCENE * sc;
+      const approachR = orbitR * 3;
+      // Logarithmic spiral: radius decays exponentially as angle increases
+      const theta = progress * Math.PI * 2;  // ~360° spiral
+      const b = Math.log(orbitR / approachR) / (Math.PI * 2);
+      const r = approachR * Math.exp(b * theta);
+      const angle = theta;
       x = moonPos.x + r * Math.cos(angle) * emNx + r * Math.sin(angle) * perpX;
       y = moonPos.y;
       z = moonPos.z + r * Math.cos(angle) * emNz + r * Math.sin(angle) * perpZ;
@@ -185,14 +213,15 @@ export function computeMissionState(
     }
 
     case 'lunar_orbit': {
-      // Circular orbit around Moon, then lower to 15×200km
+      // Circular orbit around Moon, then lower to 15×200km elliptical
       const highR = (1 + 200 / 1737) * MOON_RADIUS_SCENE * sc;
       const lowR = (1 + 15 / 1737) * MOON_RADIUS_SCENE * sc;
-      // First 2/3 in circular, last 1/3 lowering
-      const r = progress < 0.67
-        ? highR
-        : highR + (lowR - highR) * ((progress - 0.67) / 0.33);
-      const angle = progress * Math.PI * 8;  // multiple orbits
+      // Smooth radius transition using easing (not abrupt step at 0.67)
+      const rProgress = Math.max(0, (progress - 0.5) / 0.5);
+      const r = highR + (lowR - highR) * easeInOutCubic(Math.max(0, Math.min(1, rProgress)));
+      // Multiple orbits with consistent angular velocity
+      const totalOrbits = 6;
+      const angle = progress * Math.PI * 2 * totalOrbits;
       x = moonPos.x + r * Math.cos(angle) * emNx + r * Math.sin(angle) * perpX;
       y = moonPos.y;
       z = moonPos.z + r * Math.cos(angle) * emNz + r * Math.sin(angle) * perpZ;
@@ -223,11 +252,12 @@ export function computeMissionState(
     }
 
     case 'ascent': {
-      // Rise from Moon surface to orbit
+      // Rise from Moon surface to orbit — smooth arc
       const surfaceR = MOON_RADIUS_SCENE * sc;
       const orbitR = (1 + 180 / 1737) * MOON_RADIUS_SCENE * sc;
       const r = surfaceR + (orbitR - surfaceR) * easeInOutCubic(progress);
-      const angle = Math.PI * 0.3 + progress * Math.PI * 0.5;
+      // Gentler arc
+      const angle = Math.PI * 0.3 + progress * Math.PI * 0.4;
       x = moonPos.x + r * Math.cos(angle) * emNx + r * Math.sin(angle) * perpX;
       y = moonPos.y;
       z = moonPos.z + r * Math.cos(angle) * emNz + r * Math.sin(angle) * perpZ;
@@ -235,9 +265,10 @@ export function computeMissionState(
     }
 
     case 'rendezvous': {
-      // Orbit Moon, docking maneuver
+      // Orbit Moon, rendezvous and docking maneuver
       const orbitR = (1 + 200 / 1737) * MOON_RADIUS_SCENE * sc;
-      const angle = Math.PI * 0.8 + progress * Math.PI * 4;  // multiple orbits
+      const totalOrbits = 3;
+      const angle = progress * Math.PI * 2 * totalOrbits;
       x = moonPos.x + orbitR * Math.cos(angle) * emNx + orbitR * Math.sin(angle) * perpX;
       y = moonPos.y;
       z = moonPos.z + orbitR * Math.cos(angle) * emNz + orbitR * Math.sin(angle) * perpZ;
@@ -259,7 +290,7 @@ export function computeMissionState(
 
     case 'return_transfer': {
       // Moon-Earth return trajectory (reverse of transfer, different curve)
-      const t = easeInOutCubic(progress);
+      const t = easeInOutQuint(progress);
       const mainDist = (1 - t) * emDist;
 
       // Return trajectory curves the other way
@@ -310,6 +341,21 @@ export function computeMissionState(
     }
   }
 
+  // Compute heading by finite difference (sample a tiny bit ahead)
+  let hx = 0, hy = 0, hz = 0;
+  if (!completed && !_noHeading) {
+    const dt = Math.min(totalMissionDuration * 0.0001, 10);
+    const ahead = computeMissionState(
+      Math.min(clampedElapsed + dt, totalMissionDuration),
+      earthPos, moonPos, earthScale, earthRotY, true,
+    );
+    hx = ahead.position.x - x;
+    hy = ahead.position.y - y;
+    hz = ahead.position.z - z;
+    const hLen = Math.sqrt(hx * hx + hy * hy + hz * hz) || 1;
+    hx /= hLen; hy /= hLen; hz /= hLen;
+  }
+
   return {
     active: true,
     phaseIndex: index,
@@ -317,6 +363,7 @@ export function computeMissionState(
     missionElapsed: clampedElapsed,
     missionProgress,
     position: { x, y, z },
+    heading: { x: hx, y: hy, z: hz },
     phase,
     completed,
   };
